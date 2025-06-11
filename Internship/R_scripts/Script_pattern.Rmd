@@ -1,0 +1,1901 @@
+---
+title: "Pattern analysis"
+author: "Matthieu Gallant Canguilhem"
+date: "2025-01-30"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+# Setting the working directory for all chunks
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = '~/Images/Darktable/')
+setwd('~/Images/Darktable/')
+```
+
+
+#Uploading needed packages
+```{r, include=FALSE, echo=FALSE}
+library(patternize)
+library(tidyverse)
+library(magick)
+library(jpeg)
+library(tiff)
+library(png)
+library(imager)
+library(imagefx)
+library(grid)
+library(rstatix)
+```
+
+#test for generating image showing landmarks
+```{r}
+# Load image
+image_path <- "Cropped_image/FG24.087_D.jpeg"
+img <- image_read(image_path)
+# Convert magick image to raster for ggplot
+img_raster <- as.raster(img)
+
+# Get image dimensions
+img_info <- image_info(img)
+img_width <- img_info$width
+img_height <- img_info$height
+
+# Read landmarks
+landmarks <- read_table2("Landmarks/FG24.087_D_landmarks.txt", col_names = c("x", "y"))
+landmarks2 <- read_table2("Landmarks/FG24.087_D_landmarks2.txt", col_names = c("x", "y"))
+landmarks <- rbind(landmarks, landmarks2)
+
+# Since image origin (0,0) is top-left, flip y-axis to match ggplot's bottom-left origin
+landmarks$y <- img_height - landmarks$y
+
+# Read mask polygon points (assumes same format: no headers, just x y)
+mask <- read_table2("Landmarks/mask/FG24.087_D_Lforewing.txt", col_names = c("x", "y"))
+mask2 <- read_table2("Landmarks/mask/FG24.087_D_Lhindwing.txt", col_names = c("x", "y"))
+
+# Flip y-axis to match ggplot
+mask$y <- img_height - mask$y
+mask2$y <- img_height - mask2$y
+
+# Close the polygon (if it's not already closed)
+mask <- rbind(mask, mask[1, ])
+mask2 <- rbind(mask2, mask2[1, ])
+
+# Build plot
+img_gg <- ggplot() +
+  annotation_custom(rasterGrob(img_raster, width = unit(1, "npc"), height = unit(1, "npc")),
+                    xmin = 0, xmax = img_width, ymin = 0, ymax = img_height) +
+  geom_path(data = mask2, aes(x = x, y = y), color = "chartreuse2", linewidth = 0.9) +
+  geom_path(data = mask, aes(x = x, y = y), color = "chartreuse2", linewidth = 0.9) +
+  geom_point(data = landmarks, aes(x = x, y = y), color = "firebrick3", size = 2) +
+  coord_fixed(xlim = c(0, img_width), ylim = c(0, img_height), expand = FALSE) +
+  theme_void()
+
+# Display plot
+print(img_gg)
+ggsave(filename = "image_landmarks.png", img_gg, dpi = 300)
+```
+
+
+# rewriting colorChecker function
+```{r, setup, include=FALSE}
+colorChecker2 <- function (IDlist, prepath = NULL, outpath = NULL, extension = NULL, colorCheckerType = "X-Rite",
+    fixedCorners = FALSE, patchSize = 0.6, colorCheckerXY = NULL, 
+    fixedModel = NULL, resampleFactor = NULL, adjustCoords = FALSE) 
+{
+    prop <- 1 - patchSize
+    for (n in 1:length(IDlist)) {
+        print(paste("Processing sample", n, IDlist[n], sep = " "))
+        if (is.null(prepath)) {
+            im <- imager::load.image(paste(IDlist[n], extension, 
+                sep = ""))
+        }
+        else {
+            im <- imager::load.image(paste(prepath, "/", IDlist[n], 
+                extension, sep = ""))
+        }
+        if (!is.null(resampleFactor)) {
+            imRed <- imager::resize(im, round(width(im)/resampleFactor), 
+                round(height(im)/resampleFactor))
+        }
+        else {
+            imRed <- im
+        }
+        mR <- raster::as.matrix(imager::R(imRed)) * 255
+        mG <- raster::as.matrix(imager::G(imRed)) * 255
+        mB <- raster::as.matrix(imager::B(imRed)) * 255
+        rR <- raster::raster(mR)
+        rG <- raster::raster(mG)
+        rB <- raster::raster(mB)
+        raster::extent(rR) <- c(0, dim(imRed)[2], 0, dim(imRed)[1])
+        raster::extent(rG) <- c(0, dim(imRed)[2], 0, dim(imRed)[1])
+        raster::extent(rB) <- c(0, dim(imRed)[2], 0, dim(imRed)[1])
+        rR <- raster::flip(raster::t(rR), "y")
+        rG <- raster::flip(raster::t(rG), "y")
+        rB <- raster::flip(raster::t(rB), "y")
+        if (all(c(colorCheckerType == "X-Rite", is.null(fixedModel)))) {
+            if (is.null(colorCheckerXY)) {
+                print("Click on the outer corners of the X-Rite ColorChecker (1: ~brown, 2: ~cyan, 3: ~black, 4: ~white)")
+                layout(matrix(c(1, 1), 2, 1, byrow = TRUE))
+                plot(imRed, xlim = c(0, width(imRed)))
+                if (fixedCorners == FALSE) {
+                  xy <- locator(n = 4)
+                }
+                if (all(c(fixedCorners == TRUE, n == 1))) {
+                  xy <- locator(n = 4)
+                }
+            }
+            if (!is.null(colorCheckerXY)) {
+                xy <- list()
+                xy$x <- colorCheckerXY[[n]][, 1]
+                xy$y <- colorCheckerXY[[n]][, 2]
+            }
+            print("Matching ColorCecker patches...")
+            if (is.null(colorCheckerXY)) {
+                polygon(xy$x, xy$y, border = "green")
+            }
+            else {
+                plot(imRed, xlim = c(0, width(imRed)))
+                polygon(xy$x, xy$y, border = "green")
+            }
+            xyDF <- as.data.frame(xy)
+            line1 <- xyDF[1:2, ]
+            line2 <- xyDF[2:3, ]
+            line3 <- xyDF[3:4, ]
+            line4 <- xyDF[c(4, 1), ]
+            xdiff <- (line1$x[2] - line1$x[1])/6
+            ydiff <- (line1$y[2] - line1$y[1])/6
+            xmin <- line1$x[1]
+            ymin <- line1$y[1]
+            xySubA <- list(x = c((xmin + xmin + xdiff)/2, (xmin + 
+                xdiff + xmin + xdiff * 2)/2, (xmin + xdiff * 
+                2 + xmin + xdiff * 3)/2, (xmin + xdiff * 3 + 
+                xmin + xdiff * 4)/2, (xmin + xdiff * 4 + xmin + 
+                xdiff * 5)/2, (xmin + xdiff * 5 + xmin + xdiff * 
+                6)/2), y = c((ymin + ymin + ydiff)/2, (ymin + 
+                ydiff + ymin + ydiff * 2)/2, (ymin + ydiff * 
+                2 + ymin + ydiff * 3)/2, (ymin + ydiff * 3 + 
+                ymin + ydiff * 4)/2, (ymin + ydiff * 4 + ymin + 
+                ydiff * 5)/2, (ymin + ydiff * 5 + ymin + ydiff * 
+                6)/2))
+            xySubDF_1A <- as.data.frame(xySubA)
+            xySubBa <- list(x = c(xmin + xdiff - (xdiff/2) * 
+                prop, xmin + xdiff * 2 - (xdiff/2) * prop, xmin + 
+                xdiff * 3 - (xdiff/2) * prop, xmin + xdiff * 
+                4 - (xdiff/2) * prop, xmin + xdiff * 5 - (xdiff/2) * 
+                prop, xmin + xdiff * 6 - (xdiff/2) * prop), y = c(ymin + 
+                ydiff - (ydiff/2) * prop, ymin + ydiff * 2 - 
+                (ydiff/2) * prop, ymin + ydiff * 3 - (ydiff/2) * 
+                prop, ymin + ydiff * 4 - (ydiff/2) * prop, ymin + 
+                ydiff * 5 - (ydiff/2) * prop, ymin + ydiff * 
+                6 - (ydiff/2) * prop))
+            xySubBb <- list(x = c(xmin + (xdiff/2) * prop, xmin + 
+                xdiff + (xdiff/2) * prop, xmin + xdiff * 2 + 
+                (xdiff/2) * prop, xmin + xdiff * 3 + (xdiff/2) * 
+                prop, xmin + xdiff * 4 + (xdiff/2) * prop, xmin + 
+                xdiff * 5 + (xdiff/2) * prop), y = c(ymin + (ydiff/2) * 
+                prop, ymin + ydiff + (ydiff/2) * prop, ymin + 
+                ydiff * 2 + (ydiff/2) * prop, ymin + ydiff * 
+                3 + (ydiff/2) * prop, ymin + ydiff * 4 + (ydiff/2) * 
+                prop, ymin + ydiff * 5 + (ydiff/2) * prop))
+            xySubDF_1Ba <- as.data.frame(xySubBa)
+            xySubDF_1Bb <- as.data.frame(xySubBb)
+            xdiff <- (line3$x[2] - line3$x[1])/6
+            ydiff <- (line3$y[2] - line3$y[1])/6
+            xmin <- line3$x[1]
+            ymin <- line3$y[1]
+            xySubA <- list(x = c((xmin + xmin + xdiff)/2, (xmin + 
+                xdiff + xmin + xdiff * 2)/2, (xmin + xdiff * 
+                2 + xmin + xdiff * 3)/2, (xmin + xdiff * 3 + 
+                xmin + xdiff * 4)/2, (xmin + xdiff * 4 + xmin + 
+                xdiff * 5)/2, (xmin + xdiff * 5 + xmin + xdiff * 
+                6)/2), y = c((ymin + ymin + ydiff)/2, (ymin + 
+                ydiff + ymin + ydiff * 2)/2, (ymin + ydiff * 
+                2 + ymin + ydiff * 3)/2, (ymin + ydiff * 3 + 
+                ymin + ydiff * 4)/2, (ymin + ydiff * 4 + ymin + 
+                ydiff * 5)/2, (ymin + ydiff * 5 + ymin + ydiff * 
+                6)/2))
+            xySubDF_3A <- as.data.frame(xySubA)
+            xySubBa <- list(x = c(xmin + xdiff - (xdiff/2) * 
+                prop, xmin + xdiff * 2 - (xdiff/2) * prop, xmin + 
+                xdiff * 3 - (xdiff/2) * prop, xmin + xdiff * 
+                4 - (xdiff/2) * prop, xmin + xdiff * 5 - (xdiff/2) * 
+                prop, xmin + xdiff * 6 - (xdiff/2) * prop), y = c(ymin + 
+                ydiff - (ydiff/2) * prop, ymin + ydiff * 2 - 
+                (ydiff/2) * prop, ymin + ydiff * 3 - (ydiff/2) * 
+                prop, ymin + ydiff * 4 - (ydiff/2) * prop, ymin + 
+                ydiff * 5 - (ydiff/2) * prop, ymin + ydiff * 
+                6 - (ydiff/2) * prop))
+            xySubBb <- list(x = c(xmin + (xdiff/2) * prop, xmin + 
+                xdiff + (xdiff/2) * prop, xmin + xdiff * 2 + 
+                (xdiff/2) * prop, xmin + xdiff * 3 + (xdiff/2) * 
+                prop, xmin + xdiff * 4 + (xdiff/2) * prop, xmin + 
+                xdiff * 5 + (xdiff/2) * prop), y = c(ymin + (ydiff/2) * 
+                prop, ymin + ydiff + (ydiff/2) * prop, ymin + 
+                ydiff * 2 + (ydiff/2) * prop, ymin + ydiff * 
+                3 + (ydiff/2) * prop, ymin + ydiff * 4 + (ydiff/2) * 
+                prop, ymin + ydiff * 5 + (ydiff/2) * prop))
+            xySubDF_3Ba <- as.data.frame(xySubBa)
+            xySubDF_3Bb <- as.data.frame(xySubBb)
+            xdiff <- (line2$x[2] - line2$x[1])/4
+            ydiff <- (line2$y[2] - line2$y[1])/4
+            xmin <- line2$x[1]
+            ymin <- line2$y[1]
+            xySubA <- list(x = c((xmin + xmin + xdiff)/2, (xmin + 
+                xdiff + xmin + xdiff * 2)/2, (xmin + xdiff * 
+                2 + xmin + xdiff * 3)/2, (xmin + xdiff * 3 + 
+                xmin + xdiff * 4)/2), y = c((ymin + ymin + ydiff)/2, 
+                (ymin + ydiff + ymin + ydiff * 2)/2, (ymin + 
+                  ydiff * 2 + ymin + ydiff * 3)/2, (ymin + ydiff * 
+                  3 + ymin + ydiff * 4)/2))
+            xySubDF_2A <- as.data.frame(xySubA)
+            xySubBa <- list(x = c(xmin + xdiff - (xdiff/2) * 
+                prop, xmin + xdiff * 2 - (xdiff/2) * prop, xmin + 
+                xdiff * 3 - (xdiff/2) * prop, xmin + xdiff * 
+                4 - (xdiff/2) * prop), y = c(ymin + ydiff - (ydiff/2) * 
+                prop, ymin + ydiff * 2 - (ydiff/2) * prop, ymin + 
+                ydiff * 3 - (ydiff/2) * prop, ymin + ydiff * 
+                4 - (ydiff/2) * prop))
+            xySubBb <- list(x = c(xmin + (xdiff/2) * prop, xmin + 
+                xdiff + (xdiff/2) * prop, xmin + xdiff * 2 + 
+                (xdiff/2) * prop, xmin + xdiff * 3 + (xdiff/2) * 
+                prop), y = c(ymin + (ydiff/2) * prop, ymin + 
+                ydiff + (ydiff/2) * prop, ymin + ydiff * 2 + 
+                (ydiff/2) * prop, ymin + ydiff * 3 + (ydiff/2) * 
+                prop))
+            xySubDF_2Ba <- as.data.frame(xySubBa)
+            xySubDF_2Bb <- as.data.frame(xySubBb)
+            xdiff <- (line4$x[2] - line4$x[1])/4
+            ydiff <- (line4$y[2] - line4$y[1])/4
+            xmin <- line4$x[1]
+            ymin <- line4$y[1]
+            xySubA <- list(x = c((xmin + xmin + xdiff)/2, (xmin + 
+                xdiff + xmin + xdiff * 2)/2, (xmin + xdiff * 
+                2 + xmin + xdiff * 3)/2, (xmin + xdiff * 3 + 
+                xmin + xdiff * 4)/2), y = c((ymin + ymin + ydiff)/2, 
+                (ymin + ydiff + ymin + ydiff * 2)/2, (ymin + 
+                  ydiff * 2 + ymin + ydiff * 3)/2, (ymin + ydiff * 
+                  3 + ymin + ydiff * 4)/2))
+            xySubDF_4A <- as.data.frame(xySubA)
+            xySubBa <- list(x = c(xmin + xdiff - (xdiff/2) * 
+                prop, xmin + xdiff * 2 - (xdiff/2) * prop, xmin + 
+                xdiff * 3 - (xdiff/2) * prop, xmin + xdiff * 
+                4 - (xdiff/2) * prop), y = c(ymin + ydiff - (ydiff/2) * 
+                prop, ymin + ydiff * 2 - (ydiff/2) * prop, ymin + 
+                ydiff * 3 - (ydiff/2) * prop, ymin + ydiff * 
+                4 - (ydiff/2) * prop))
+            xySubBb <- list(x = c(xmin + (xdiff/2) * prop, xmin + 
+                xdiff + (xdiff/2) * prop, xmin + xdiff * 2 + 
+                (xdiff/2) * prop, xmin + xdiff * 3 + (xdiff/2) * 
+                prop), y = c(ymin + (ydiff/2) * prop, ymin + 
+                ydiff + (ydiff/2) * prop, ymin + ydiff * 2 + 
+                (ydiff/2) * prop, ymin + ydiff * 3 + (ydiff/2) * 
+                prop))
+            xySubDF_4Ba <- as.data.frame(xySubBa)
+            xySubDF_4Bb <- as.data.frame(xySubBb)
+            points(xySubDF_1A, pch = 20, col = "green")
+            points(xySubDF_1Ba, pch = 20, col = "red")
+            points(xySubDF_1Bb, pch = 20, col = "red")
+            points(xySubDF_2A, pch = 20, col = "green")
+            points(xySubDF_2Ba, pch = 20, col = "red")
+            points(xySubDF_2Bb, pch = 20, col = "red")
+            points(xySubDF_3A, pch = 20, col = "green")
+            points(xySubDF_3Ba, pch = 20, col = "red")
+            points(xySubDF_3Bb, pch = 20, col = "red")
+            points(xySubDF_4A, pch = 20, col = "green")
+            points(xySubDF_4Ba, pch = 20, col = "red")
+            points(xySubDF_4Bb, pch = 20, col = "red")
+            labels <- list(c(1, 7, 13, 19), c(2, 8, 14, 20), 
+                c(3, 9, 15, 21), c(4, 10, 16, 22), c(5, 11, 17, 
+                  23), c(6, 12, 18, 24))
+            xyTot <- c()
+            for (e in 1:nrow(xySubDF_1A)) {
+                xyLine1 <- xySubDF_1A[e, ]
+                xyLine2 <- xySubDF_3A[6:1, ][e, ]
+                xdiff <- (xyLine2$x - xyLine1$x)/4
+                ydiff <- (xyLine2$y - xyLine1$y)/4
+                xmin <- xyLine1$x
+                ymin <- xyLine1$y
+                xySub <- list(x = c((xmin + xmin + xdiff)/2, 
+                  (xmin + xdiff + xmin + xdiff * 2)/2, (xmin + 
+                    xdiff * 2 + xmin + xdiff * 3)/2, (xmin + 
+                    xdiff * 3 + xmin + xdiff * 4)/2), y = c((ymin + 
+                  ymin + ydiff)/2, (ymin + ydiff + ymin + ydiff * 
+                  2)/2, (ymin + ydiff * 2 + ymin + ydiff * 3)/2, 
+                  (ymin + ydiff * 3 + ymin + ydiff * 4)/2))
+                xySubDF <- as.data.frame(xySub)
+                if (is.null(colorCheckerXY)) {
+                  text(xySubDF, label = labels[[e]], col = "green")
+                }
+                xySubDFLabel <- cbind(xySubDF, label = labels[[e]])
+                xyLine1a <- xySubDF_1Ba[e, ]
+                xyLine1b <- xySubDF_1Bb[e, ]
+                xyLine3a <- xySubDF_3Bb[6:1, ][e, ]
+                xyLine3b <- xySubDF_3Ba[6:1, ][e, ]
+                xdiffa <- (xyLine3a$x - xyLine1a$x)/4
+                ydiffa <- (xyLine3a$y - xyLine1a$y)/4
+                xdiffb <- (xyLine3b$x - xyLine1b$x)/4
+                ydiffb <- (xyLine3b$y - xyLine1b$y)/4
+                xmina <- xyLine1a$x
+                ymina <- xyLine1a$y
+                xminb <- xyLine1b$x
+                yminb <- xyLine1b$y
+                xySubAa <- list(x = c(xmina + xdiffa - (xdiffa/2) * 
+                  prop, xmina + xdiffa * 2 - (xdiffa/2) * prop, 
+                  xmina + xdiffa * 3 - (xdiffa/2) * prop, xmina + 
+                    xdiffa * 4 - (xdiffa/2) * prop), y = c(ymina + 
+                  ydiffa - (ydiffa/2) * prop, ymina + ydiffa * 
+                  2 - (ydiffa/2) * prop, ymina + ydiffa * 3 - 
+                  (ydiffa/2) * prop, ymina + ydiffa * 4 - (ydiffa/2) * 
+                  prop))
+                xySubAb <- list(x = c(xmina + (xdiffa/2) * prop, 
+                  xmina + xdiffa + (xdiffa/2) * prop, xmina + 
+                    xdiffa * 2 + (xdiffa/2) * prop, xmina + xdiffa * 
+                    3 + (xdiffa/2) * prop), y = c(ymina + (ydiffa/2) * 
+                  prop, ymina + ydiffa + (ydiffa/2) * prop, ymina + 
+                  ydiffa * 2 + (ydiffa/2) * prop, ymina + ydiffa * 
+                  3 + (ydiffa/2) * prop))
+                xySubBa <- list(x = c(xminb + xdiffb - (xdiffb/2) * 
+                  prop, xminb + xdiffb * 2 - (xdiffb/2) * prop, 
+                  xminb + xdiffb * 3 - (xdiffb/2) * prop, xminb + 
+                    xdiffb * 4 - (xdiffb/2) * prop), y = c(yminb + 
+                  ydiffb - (ydiffb/2) * prop, yminb + ydiffb * 
+                  2 - (ydiffb/2) * prop, yminb + ydiffb * 3 - 
+                  (ydiffb/2) * prop, yminb + ydiffb * 4 - (ydiffb/2) * 
+                  prop))
+                xySubBb <- list(x = c(xminb + (xdiffb/2) * prop, 
+                  xminb + xdiffb + (xdiffb/2) * prop, xminb + 
+                    xdiffb * 2 + (xdiffb/2) * prop, xminb + xdiffb * 
+                    3 + (xdiffb/2) * prop), y = c(yminb + (ydiffb/2) * 
+                  prop, yminb + ydiffb + (ydiffb/2) * prop, yminb + 
+                  ydiffb * 2 + (ydiffb/2) * prop, yminb + ydiffb * 
+                  3 + (ydiffb/2) * prop))
+                xySubAaDF <- as.data.frame(xySubAa)
+                xySubAbDF <- as.data.frame(xySubAb)
+                xySubBaDF <- as.data.frame(xySubBa)
+                xySubBbDF <- as.data.frame(xySubBb)
+                xySubRow <- cbind(xySubAaDF, xySubAbDF, xySubBaDF, 
+                  xySubBbDF, label = labels[[e]])
+                colnames(xySubRow) <- c("x1", "y1", "x2", "y2", 
+                  "x3", "y3", "x4", "y4", "label")
+                xyTot <- rbind(xyTot, xySubRow)
+            }
+            xyTot$imR <- NA
+            xyTot$imG <- NA
+            xyTot$imB <- NA
+            xyTot <- xyTot[order(xyTot$label), ]
+            for (e in 1:nrow(xyTot)) {
+                print(paste("Calculating observed RGB values for patch", 
+                  e, sep = " "))
+                polygon(c(xyTot$x1[e], xyTot$x2[e], xyTot$x4[e], 
+                  xyTot$x3[e]), c(xyTot$y1[e], xyTot$y2[e], xyTot$y4[e], 
+                  xyTot$y3[e]), border = "red")
+                outline <- rbind(c(xyTot$x1[e], xyTot$y1[e]), 
+                  c(xyTot$x2[e], xyTot$y2[e]), c(xyTot$x4[e], 
+                    xyTot$y4[e]), c(xyTot$x3[e], xyTot$y3[e]))
+                poly <- sp::Polygons(list(sp::Polygon(outline)), 
+                  paste("r"))
+                polyList <- c(poly)
+                polyNames <- c(paste("r"))
+                sr <- sp::SpatialPolygons(polyList)
+                srdf <- sp::SpatialPolygonsDataFrame(sr, data.frame(1:length(polyNames), 
+                  row.names = polyNames))
+                extrR <- raster::extract(rR, srdf)
+                extrG <- raster::extract(rG, srdf)
+                extrB <- raster::extract(rB, srdf)
+                xyTot$imR[e] <- mean(extrR[[1]])
+                xyTot$imG[e] <- mean(extrG[[1]])
+                xyTot$imB[e] <- mean(extrB[[1]])
+            }
+            l1 <- c(1, 115, 82, 68)
+            l2 <- c(2, 194, 150, 130)
+            l3 <- c(3, 98, 122, 157)
+            l4 <- c(4, 87, 108, 67)
+            l5 <- c(5, 133, 128, 177)
+            l6 <- c(6, 103, 189, 170)
+            l7 <- c(7, 214, 126, 44)
+            l8 <- c(8, 80, 91, 166)
+            l9 <- c(9, 193, 90, 99)
+            l10 <- c(10, 94, 60, 108)
+            l11 <- c(11, 157, 188, 64)
+            l12 <- c(12, 224, 163, 46)
+            l13 <- c(13, 56, 61, 150)
+            l14 <- c(14, 70, 148, 73)
+            l15 <- c(15, 175, 54, 60)
+            l16 <- c(16, 231, 199, 31)
+            l17 <- c(17, 187, 86, 149)
+            l18 <- c(18, 8, 133, 161)
+            l19 <- c(19, 243, 243, 242)
+            l20 <- c(20, 200, 200, 200)
+            l21 <- c(21, 160, 160, 160)
+            l22 <- c(22, 122, 122, 121)
+            l23 <- c(23, 85, 85, 85)
+            l24 <- c(24, 52, 52, 52)
+            ColorCheckerRGB <- as.data.frame(rbind(l1, l2, l3, 
+                l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, 
+                l15, l16, l17, l18, l19, l20, l21, l22, l23, 
+                l24))
+            colnames(ColorCheckerRGB) <- c("label", "sR", "sG", 
+                "sB")
+            dat <- merge(xyTot, ColorCheckerRGB, by = "label")
+            print("Calculating polynomial regression...")
+            sR <- dat$sR
+            sG <- dat$sG
+            sB <- dat$sB
+            imR <- dat$imR
+            imG <- dat$imG
+            imB <- dat$imB
+            modelR <- lm(sR ~ imR + imG + imB + imR^2 + imG^2 + 
+                imB^2)
+            modelG <- lm(sG ~ imR + imG + imB + imR^2 + imG^2 + 
+                imB^2)
+            modelB <- lm(sB ~ imR + imG + imB + imR^2 + imG^2 + 
+                imB^2)
+            dfIm = data.frame(imR = matrix(mR, ncol = 1), imG = matrix(mG, 
+                ncol = 1), imB = matrix(mB, ncol = 1))
+            print("Calibrating colors...")
+            prR <- predict(modelR, dfIm)
+            prG <- predict(modelG, dfIm)
+            prB <- predict(modelB, dfIm)
+            dfCal <- as.data.frame(cbind(prR, prG, prB))
+            print("Rebuilding image...")
+            Ri = matrix(dfCal$prR, nrow = dim(imRed)[1])
+            Gi = matrix(dfCal$prG, nrow = dim(imRed)[1])
+            Bi = matrix(dfCal$prB, nrow = dim(imRed)[1])
+            imCal = array(dim = dim(imRed))
+            imCal[, , , 1] = Ri
+            imCal[, , , 2] = Gi
+            imCal[, , , 3] = Bi
+            imCal <- imager::as.cimg(imCal)
+            layout(matrix(c(1, 2), 2, 1, byrow = TRUE))
+            plot(imRed)
+            plot(imCal)
+        }
+        if (all(c(colorCheckerType == "ColorGauge Micro Analyzer", 
+            is.null(fixedModel)))) {
+            if (is.null(colorCheckerXY)) {
+                print("Click on the outer corners of the ColorGauge Micro Analyzer ColorChecker (1: ~brown, 2: ~cyan, 3: ~purple, 4: ~red)")
+                layout(matrix(c(1, 1), 2, 1, byrow = TRUE))
+                plot(imRed, xlim = c(0, width(imRed)))
+                if (fixedCorners == FALSE) {
+                  xy <- locator(n = 4)
+                }
+                if (all(c(fixedCorners == TRUE & n == 1))) {
+                  xy <- locator(n = 4)
+                }
+            }
+            if (!is.null(colorCheckerXY)) {
+                xy <- list()
+                xy$x <- colorCheckerXY[[n]][, 1]
+                xy$y <- colorCheckerXY[[n]][, 2]
+            }
+            print("Matching ColorCecker patches...")
+            if (is.null(colorCheckerXY)) {
+                polygon(xy$x, xy$y, border = "green")
+            }
+            xyDF <- as.data.frame(xy)
+            line1 <- xyDF[1:2, ]
+            line2 <- xyDF[2:3, ]
+            line3 <- xyDF[3:4, ]
+            line4 <- xyDF[c(4, 1), ]
+            xdiff <- (line1$x[2] - line1$x[1])/6
+            ydiff <- (line1$y[2] - line1$y[1])/6
+            xmin <- line1$x[1]
+            ymin <- line1$y[1]
+            xySubA <- list(x = c((xmin + xmin + xdiff)/2, (xmin + 
+                xdiff + xmin + xdiff * 2)/2, (xmin + xdiff * 
+                2 + xmin + xdiff * 3)/2, (xmin + xdiff * 3 + 
+                xmin + xdiff * 4)/2, (xmin + xdiff * 4 + xmin + 
+                xdiff * 5)/2, (xmin + xdiff * 5 + xmin + xdiff * 
+                6)/2), y = c((ymin + ymin + ydiff)/2, (ymin + 
+                ydiff + ymin + ydiff * 2)/2, (ymin + ydiff * 
+                2 + ymin + ydiff * 3)/2, (ymin + ydiff * 3 + 
+                ymin + ydiff * 4)/2, (ymin + ydiff * 4 + ymin + 
+                ydiff * 5)/2, (ymin + ydiff * 5 + ymin + ydiff * 
+                6)/2))
+            xySubDF_1A <- as.data.frame(xySubA)
+            xySubBa <- list(x = c(xmin + xdiff - (xdiff/2) * 
+                prop, xmin + xdiff * 2 - (xdiff/2) * prop, xmin + 
+                xdiff * 3 - (xdiff/2) * prop, xmin + xdiff * 
+                4 - (xdiff/2) * prop, xmin + xdiff * 5 - (xdiff/2) * 
+                prop, xmin + xdiff * 6 - (xdiff/2) * prop), y = c(ymin + 
+                ydiff - (ydiff/2) * prop, ymin + ydiff * 2 - 
+                (ydiff/2) * prop, ymin + ydiff * 3 - (ydiff/2) * 
+                prop, ymin + ydiff * 4 - (ydiff/2) * prop, ymin + 
+                ydiff * 5 - (ydiff/2) * prop, ymin + ydiff * 
+                6 - (ydiff/2) * prop))
+            xySubBb <- list(x = c(xmin + (xdiff/2) * prop, xmin + 
+                xdiff + (xdiff/2) * prop, xmin + xdiff * 2 + 
+                (xdiff/2) * prop, xmin + xdiff * 3 + (xdiff/2) * 
+                prop, xmin + xdiff * 4 + (xdiff/2) * prop, xmin + 
+                xdiff * 5 + (xdiff/2) * prop), y = c(ymin + (ydiff/2) * 
+                prop, ymin + ydiff + (ydiff/2) * prop, ymin + 
+                ydiff * 2 + (ydiff/2) * prop, ymin + ydiff * 
+                3 + (ydiff/2) * prop, ymin + ydiff * 4 + (ydiff/2) * 
+                prop, ymin + ydiff * 5 + (ydiff/2) * prop))
+            xySubDF_1Ba <- as.data.frame(xySubBa)
+            xySubDF_1Bb <- as.data.frame(xySubBb)
+            xdiff <- (line3$x[2] - line3$x[1])/6
+            ydiff <- (line3$y[2] - line3$y[1])/6
+            xmin <- line3$x[1]
+            ymin <- line3$y[1]
+            xySubA <- list(x = c((xmin + xmin + xdiff)/2, (xmin + 
+                xdiff + xmin + xdiff * 2)/2, (xmin + xdiff * 
+                2 + xmin + xdiff * 3)/2, (xmin + xdiff * 3 + 
+                xmin + xdiff * 4)/2, (xmin + xdiff * 4 + xmin + 
+                xdiff * 5)/2, (xmin + xdiff * 5 + xmin + xdiff * 
+                6)/2), y = c((ymin + ymin + ydiff)/2, (ymin + 
+                ydiff + ymin + ydiff * 2)/2, (ymin + ydiff * 
+                2 + ymin + ydiff * 3)/2, (ymin + ydiff * 3 + 
+                ymin + ydiff * 4)/2, (ymin + ydiff * 4 + ymin + 
+                ydiff * 5)/2, (ymin + ydiff * 5 + ymin + ydiff * 
+                6)/2))
+            xySubDF_3A <- as.data.frame(xySubA)
+            xySubBa <- list(x = c(xmin + xdiff - (xdiff/2) * 
+                prop, xmin + xdiff * 2 - (xdiff/2) * prop, xmin + 
+                xdiff * 3 - (xdiff/2) * prop, xmin + xdiff * 
+                4 - (xdiff/2) * prop, xmin + xdiff * 5 - (xdiff/2) * 
+                prop, xmin + xdiff * 6 - (xdiff/2) * prop), y = c(ymin + 
+                ydiff - (ydiff/2) * prop, ymin + ydiff * 2 - 
+                (ydiff/2) * prop, ymin + ydiff * 3 - (ydiff/2) * 
+                prop, ymin + ydiff * 4 - (ydiff/2) * prop, ymin + 
+                ydiff * 5 - (ydiff/2) * prop, ymin + ydiff * 
+                6 - (ydiff/2) * prop))
+            xySubBb <- list(x = c(xmin + (xdiff/2) * prop, xmin + 
+                xdiff + (xdiff/2) * prop, xmin + xdiff * 2 + 
+                (xdiff/2) * prop, xmin + xdiff * 3 + (xdiff/2) * 
+                prop, xmin + xdiff * 4 + (xdiff/2) * prop, xmin + 
+                xdiff * 5 + (xdiff/2) * prop), y = c(ymin + (ydiff/2) * 
+                prop, ymin + ydiff + (ydiff/2) * prop, ymin + 
+                ydiff * 2 + (ydiff/2) * prop, ymin + ydiff * 
+                3 + (ydiff/2) * prop, ymin + ydiff * 4 + (ydiff/2) * 
+                prop, ymin + ydiff * 5 + (ydiff/2) * prop))
+            xySubDF_3Ba <- as.data.frame(xySubBa)
+            xySubDF_3Bb <- as.data.frame(xySubBb)
+            xdiff <- (line2$x[2] - line2$x[1])/5
+            ydiff <- (line2$y[2] - line2$y[1])/5
+            xmin <- line2$x[1]
+            ymin <- line2$y[1]
+            xySubA <- list(x = c((xmin + xmin + xdiff)/2, (xmin + 
+                xdiff + xmin + xdiff * 2)/2, (xmin + xdiff * 
+                2 + xmin + xdiff * 3)/2, (xmin + xdiff * 3 + 
+                xmin + xdiff * 4)/2, (xmin + xdiff * 4 + xmin + 
+                xdiff * 5)/2), y = c((ymin + ymin + ydiff)/2, 
+                (ymin + ydiff + ymin + ydiff * 2)/2, (ymin + 
+                  ydiff * 2 + ymin + ydiff * 3)/2, (ymin + ydiff * 
+                  3 + ymin + ydiff * 4)/2, (ymin + ydiff * 4 + 
+                  ymin + ydiff * 5)/2))
+            xySubDF_2A <- as.data.frame(xySubA)
+            xySubBa <- list(x = c(xmin + xdiff - (xdiff/2) * 
+                prop, xmin + xdiff * 2 - (xdiff/2) * prop, xmin + 
+                xdiff * 3 - (xdiff/2) * prop, xmin + xdiff * 
+                4 - (xdiff/2) * prop, xmin + xdiff * 5 - (xdiff/2) * 
+                prop), y = c(ymin + ydiff - (ydiff/2) * prop, 
+                ymin + ydiff * 2 - (ydiff/2) * prop, ymin + ydiff * 
+                  3 - (ydiff/2) * prop, ymin + ydiff * 4 - (ydiff/2) * 
+                  prop, ymin + ydiff * 5 - (ydiff/2) * prop))
+            xySubBb <- list(x = c(xmin + (xdiff/2) * prop, xmin + 
+                xdiff + (xdiff/2) * prop, xmin + xdiff * 2 + 
+                (xdiff/2) * prop, xmin + xdiff * 3 + (xdiff/2) * 
+                prop, xmin + xdiff * 4 + (xdiff/2) * prop), y = c(ymin + 
+                (ydiff/2) * prop, ymin + ydiff + (ydiff/2) * 
+                prop, ymin + ydiff * 2 + (ydiff/2) * prop, ymin + 
+                ydiff * 3 + (ydiff/2) * prop, ymin + ydiff * 
+                4 + (ydiff/2) * prop))
+            xySubDF_2Ba <- as.data.frame(xySubBa)
+            xySubDF_2Bb <- as.data.frame(xySubBb)
+            xdiff <- (line4$x[2] - line4$x[1])/5
+            ydiff <- (line4$y[2] - line4$y[1])/5
+            xmin <- line4$x[1]
+            ymin <- line4$y[1]
+            xySubA <- list(x = c((xmin + xmin + xdiff)/2, (xmin + 
+                xdiff + xmin + xdiff * 2)/2, (xmin + xdiff * 
+                2 + xmin + xdiff * 3)/2, (xmin + xdiff * 3 + 
+                xmin + xdiff * 4)/2, (xmin + xdiff * 4 + xmin + 
+                xdiff * 5)/2), y = c((ymin + ymin + ydiff)/2, 
+                (ymin + ydiff + ymin + ydiff * 2)/2, (ymin + 
+                  ydiff * 2 + ymin + ydiff * 3)/2, (ymin + ydiff * 
+                  3 + ymin + ydiff * 4)/2, (ymin + ydiff * 4 + 
+                  ymin + ydiff * 5)/2))
+            xySubDF_4A <- as.data.frame(xySubA)
+            xySubBa <- list(x = c(xmin + xdiff - (xdiff/2) * 
+                prop, xmin + xdiff * 2 - (xdiff/2) * prop, xmin + 
+                xdiff * 3 - (xdiff/2) * prop, xmin + xdiff * 
+                4 - (xdiff/2) * prop, xmin + xdiff * 5 - (xdiff/2) * 
+                prop), y = c(ymin + ydiff - (ydiff/2) * prop, 
+                ymin + ydiff * 2 - (ydiff/2) * prop, ymin + ydiff * 
+                  3 - (ydiff/2) * prop, ymin + ydiff * 4 - (ydiff/2) * 
+                  prop, ymin + ydiff * 5 - (ydiff/2) * prop))
+            xySubBb <- list(x = c(xmin + (xdiff/2) * prop, xmin + 
+                xdiff + (xdiff/2) * prop, xmin + xdiff * 2 + 
+                (xdiff/2) * prop, xmin + xdiff * 3 + (xdiff/2) * 
+                prop, xmin + xdiff * 4 + (xdiff/2) * prop), y = c(ymin + 
+                (ydiff/2) * prop, ymin + ydiff + (ydiff/2) * 
+                prop, ymin + ydiff * 2 + (ydiff/2) * prop, ymin + 
+                ydiff * 3 + (ydiff/2) * prop, ymin + ydiff * 
+                4 + (ydiff/2) * prop))
+            xySubDF_4Ba <- as.data.frame(xySubBa)
+            xySubDF_4Bb <- as.data.frame(xySubBb)
+            if (is.null(colorCheckerXY)) {
+                points(xySubDF_1A, pch = 20, col = "green")
+                points(xySubDF_1Ba, pch = 20, col = "red")
+                points(xySubDF_1Bb, pch = 20, col = "red")
+                points(xySubDF_2A, pch = 20, col = "green")
+                points(xySubDF_2Ba, pch = 20, col = "red")
+                points(xySubDF_2Bb, pch = 20, col = "red")
+                points(xySubDF_3A, pch = 20, col = "green")
+                points(xySubDF_3Ba, pch = 20, col = "red")
+                points(xySubDF_3Bb, pch = 20, col = "red")
+                points(xySubDF_4A, pch = 20, col = "green")
+                points(xySubDF_4Ba, pch = 20, col = "red")
+                points(xySubDF_4Bb, pch = 20, col = "red")
+            }
+            labels <- list(c(1, 7, 13, 19, 25), c(2, 8, 14, 20, 
+                26), c(3, 9, 15, 21, 27), c(4, 10, 16, 22, 28), 
+                c(5, 11, 17, 23, 29), c(6, 12, 18, 24, 30))
+            xyTot <- c()
+            for (e in 1:nrow(xySubDF_1A)) {
+                xyLine1 <- xySubDF_1A[e, ]
+                xyLine2 <- xySubDF_3A[6:1, ][e, ]
+                xdiff <- (xyLine2$x - xyLine1$x)/5
+                ydiff <- (xyLine2$y - xyLine1$y)/5
+                xmin <- xyLine1$x
+                ymin <- xyLine1$y
+                xySub <- list(x = c((xmin + xmin + xdiff)/2, 
+                  (xmin + xdiff + xmin + xdiff * 2)/2, (xmin + 
+                    xdiff * 2 + xmin + xdiff * 3)/2, (xmin + 
+                    xdiff * 3 + xmin + xdiff * 4)/2, (xmin + 
+                    xdiff * 4 + xmin + xdiff * 5)/2), y = c((ymin + 
+                  ymin + ydiff)/2, (ymin + ydiff + ymin + ydiff * 
+                  2)/2, (ymin + ydiff * 2 + ymin + ydiff * 3)/2, 
+                  (ymin + ydiff * 3 + ymin + ydiff * 4)/2, (ymin + 
+                    ydiff * 4 + ymin + ydiff * 5)/2))
+                xySubDF <- as.data.frame(xySub)
+                if (is.null(colorCheckerXY)) {
+                  text(xySubDF, label = labels[[e]], col = "green")
+                }
+                xySubDFLabel <- cbind(xySubDF, label = labels[[e]])
+                xyLine1a <- xySubDF_1Ba[e, ]
+                xyLine1b <- xySubDF_1Bb[e, ]
+                xyLine3a <- xySubDF_3Bb[6:1, ][e, ]
+                xyLine3b <- xySubDF_3Ba[6:1, ][e, ]
+                xdiffa <- (xyLine3a$x - xyLine1a$x)/5
+                ydiffa <- (xyLine3a$y - xyLine1a$y)/5
+                xdiffb <- (xyLine3b$x - xyLine1b$x)/5
+                ydiffb <- (xyLine3b$y - xyLine1b$y)/5
+                xmina <- xyLine1a$x
+                ymina <- xyLine1a$y
+                xminb <- xyLine1b$x
+                yminb <- xyLine1b$y
+                xySubAa <- list(x = c(xmina + xdiffa - (xdiffa/2) * 
+                  prop, xmina + xdiffa * 2 - (xdiffa/2) * prop, 
+                  xmina + xdiffa * 3 - (xdiffa/2) * prop, xmina + 
+                    xdiffa * 4 - (xdiffa/2) * prop, xmina + xdiffa * 
+                    5 - (xdiffa/2) * prop), y = c(ymina + ydiffa - 
+                  (ydiffa/2) * prop, ymina + ydiffa * 2 - (ydiffa/2) * 
+                  prop, ymina + ydiffa * 3 - (ydiffa/2) * prop, 
+                  ymina + ydiffa * 4 - (ydiffa/2) * prop, ymina + 
+                    ydiffa * 5 - (ydiffa/2) * prop))
+                xySubAb <- list(x = c(xmina + (xdiffa/2) * prop, 
+                  xmina + xdiffa + (xdiffa/2) * prop, xmina + 
+                    xdiffa * 2 + (xdiffa/2) * prop, xmina + xdiffa * 
+                    3 + (xdiffa/2) * prop, xmina + xdiffa * 4 + 
+                    (xdiffa/2) * prop), y = c(ymina + (ydiffa/2) * 
+                  prop, ymina + ydiffa + (ydiffa/2) * prop, ymina + 
+                  ydiffa * 2 + (ydiffa/2) * prop, ymina + ydiffa * 
+                  3 + (ydiffa/2) * prop, ymina + ydiffa * 4 + 
+                  (ydiffa/2) * prop))
+                xySubBa <- list(x = c(xminb + xdiffb - (xdiffb/2) * 
+                  prop, xminb + xdiffb * 2 - (xdiffb/2) * prop, 
+                  xminb + xdiffb * 3 - (xdiffb/2) * prop, xminb + 
+                    xdiffb * 4 - (xdiffb/2) * prop, xminb + xdiffb * 
+                    5 - (xdiffb/2) * prop), y = c(yminb + ydiffb - 
+                  (ydiffb/2) * prop, yminb + ydiffb * 2 - (ydiffb/2) * 
+                  prop, yminb + ydiffb * 3 - (ydiffb/2) * prop, 
+                  yminb + ydiffb * 4 - (ydiffb/2) * prop, yminb + 
+                    ydiffb * 5 - (ydiffb/2) * prop))
+                xySubBb <- list(x = c(xminb + (xdiffb/2) * prop, 
+                  xminb + xdiffb + (xdiffb/2) * prop, xminb + 
+                    xdiffb * 2 + (xdiffb/2) * prop, xminb + xdiffb * 
+                    3 + (xdiffb/2) * prop, xminb + xdiffb * 4 + 
+                    (xdiffb/2) * prop), y = c(yminb + (ydiffb/2) * 
+                  prop, yminb + ydiffb + (ydiffb/2) * prop, yminb + 
+                  ydiffb * 2 + (ydiffb/2) * prop, yminb + ydiffb * 
+                  3 + (ydiffb/2) * prop, yminb + ydiffb * 4 + 
+                  (ydiffb/2) * prop))
+                xySubAaDF <- as.data.frame(xySubAa)
+                xySubAbDF <- as.data.frame(xySubAb)
+                xySubBaDF <- as.data.frame(xySubBa)
+                xySubBbDF <- as.data.frame(xySubBb)
+                xySubRow <- cbind(xySubAaDF, xySubAbDF, xySubBaDF, 
+                  xySubBbDF, label = labels[[e]])
+                colnames(xySubRow) <- c("x1", "y1", "x2", "y2", 
+                  "x3", "y3", "x4", "y4", "label")
+                xyTot <- rbind(xyTot, xySubRow)
+            }
+            xyTot$imR <- NA
+            xyTot$imG <- NA
+            xyTot$imB <- NA
+            xyTot <- xyTot[order(xyTot$label), ]
+            for (e in 1:nrow(xyTot)) {
+                print(paste("Calculating observed RGB values for patch", 
+                  e, sep = " "))
+                if (is.null(colorCheckerXY)) {
+                  polygon(c(xyTot$x1[e], xyTot$x2[e], xyTot$x4[e], 
+                    xyTot$x3[e]), c(xyTot$y1[e], xyTot$y2[e], 
+                    xyTot$y4[e], xyTot$y3[e]), border = "red")
+                }
+                outline <- rbind(c(xyTot$x1[e], xyTot$y1[e]), 
+                  c(xyTot$x2[e], xyTot$y2[e]), c(xyTot$x4[e], 
+                    xyTot$y4[e]), c(xyTot$x3[e], xyTot$y3[e]))
+                poly <- sp::Polygons(list(sp::Polygon(outline)), 
+                  paste("r"))
+                polyList <- c(poly)
+                polyNames <- c(paste("r"))
+                sr <- sp::SpatialPolygons(polyList)
+                srdf <- sp::SpatialPolygonsDataFrame(sr, data.frame(1:length(polyNames), 
+                  row.names = polyNames))
+                extrR <- raster::extract(rR, srdf)
+                extrG <- raster::extract(rG, srdf)
+                extrB <- raster::extract(rB, srdf)
+                xyTot$imR[e] <- mean(extrR[[1]])
+                xyTot$imG[e] <- mean(extrG[[1]])
+                xyTot$imB[e] <- mean(extrB[[1]])
+            }
+            l1 <- c(1, 116, 91, 76)
+            l2 <- c(2, 192, 158, 141)
+            l3 <- c(3, 113, 128, 160)
+            l4 <- c(4, 104, 118, 72)
+            l5 <- c(5, 141, 135, 181)
+            l6 <- c(6, 144, 195, 179)
+            l7 <- c(7, 79, 141, 173)
+            l8 <- c(8, 243, 244, 240)
+            l9 <- c(9, 234, 235, 232)
+            l10 <- c(10, 221, 222, 220)
+            l11 <- c(11, 209, 211, 209)
+            l12 <- c(12, 203, 138, 65)
+            l13 <- c(13, 178, 93, 158)
+            l14 <- c(14, 183, 185, 184)
+            l15 <- c(15, 158, 160, 159)
+            l16 <- c(16, 125, 127, 127)
+            l17 <- c(17, 99, 99, 99)
+            l18 <- c(18, 89, 94, 173)
+            l19 <- c(19, 227, 209, 65)
+            l20 <- c(20, 72, 74, 73)
+            l21 <- c(21, 46, 46, 46)
+            l22 <- c(22, 25, 24, 24)
+            l23 <- c(23, 11, 11, 12)
+            l24 <- c(24, 179, 95, 108)
+            l25 <- c(25, 162, 66, 68)
+            l26 <- c(26, 110, 159, 84)
+            l27 <- c(27, 61, 63, 150)
+            l28 <- c(28, 214, 174, 66)
+            l29 <- c(29, 175, 197, 84)
+            l30 <- c(30, 93, 61, 108)
+            ColorCheckerRGB <- as.data.frame(rbind(l1, l2, l3, 
+                l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, 
+                l15, l16, l17, l18, l19, l20, l21, l22, l23, 
+                l24, l25, l26, l27, l28, l29, l30))
+            colnames(ColorCheckerRGB) <- c("label", "sR", "sG", 
+                "sB")
+            dat <- merge(xyTot, ColorCheckerRGB, by = "label")
+            print("Calculating polynomial regression...")
+            sR <- dat$sR
+            sG <- dat$sG
+            sB <- dat$sB
+            imR <- dat$imR
+            imG <- dat$imG
+            imB <- dat$imB
+            modelR <- lm(sR ~ imR + imG + imB + imR^2 + imG^2 + 
+                imB^2)
+            modelG <- lm(sG ~ imR + imG + imB + imR^2 + imG^2 + 
+                imB^2)
+            modelB <- lm(sB ~ imR + imG + imB + imR^2 + imG^2 + 
+                imB^2)
+            dfIm = data.frame(imR = matrix(mR, ncol = 1), imG = matrix(mG, 
+                ncol = 1), imB = matrix(mB, ncol = 1))
+            print("Calibrating colors...")
+            prR <- predict(modelR, dfIm)
+            prG <- predict(modelG, dfIm)
+            prB <- predict(modelB, dfIm)
+            dfCal <- as.data.frame(cbind(prR, prG, prB))
+            print("Rebuilding image...")
+            Ri = matrix(dfCal$prR, nrow = dim(im)[1])
+            Gi = matrix(dfCal$prG, nrow = dim(im)[1])
+            Bi = matrix(dfCal$prB, nrow = dim(im)[1])
+            imCal = array(dim = dim(im))
+            imCal[, , , 1] = Ri
+            imCal[, , , 2] = Gi
+            imCal[, , , 3] = Bi
+            imCal <- imager::as.cimg(imCal)
+            if (is.null(colorCheckerXY)) {
+                layout(matrix(c(1, 2), 2, 1, byrow = TRUE))
+                plot(imRed)
+                plot(imCal)
+            }
+        }
+        if (!is.null(fixedModel)) {
+            modelR <- fixedModel[[1]]
+            modelG <- fixedModel[[2]]
+            modelB <- fixedModel[[3]]
+            dfIm = data.frame(imR = matrix(mR, ncol = 1), imG = matrix(mG, 
+                ncol = 1), imB = matrix(mB, ncol = 1))
+            print("Calibrating colors...")
+            prR <- predict(modelR, dfIm)
+            prG <- predict(modelG, dfIm)
+            prB <- predict(modelB, dfIm)
+            dfCal <- as.data.frame(cbind(prR, prG, prB))
+            print("Rebuilding image...")
+            Ri = matrix(dfCal$prR, nrow = dim(imRed)[1])
+            Gi = matrix(dfCal$prG, nrow = dim(imRed)[1])
+            Bi = matrix(dfCal$prB, nrow = dim(imRed)[1])
+            imCal = array(dim = dim(imRed))
+            imCal[, , , 1] = Ri
+            imCal[, , , 2] = Gi
+            imCal[, , , 3] = Bi
+            imCal <- imager::as.cimg(imCal)
+        }
+        if (is.null(outpath)) {
+            im <- imager::save.image(imCal, paste(IDlist[n], 
+                "_calibrated", extension, sep = ""), quality = 1)
+        }
+        else {
+            im <- imager::save.image(imCal, paste(outpath, "/", 
+                IDlist[n], "_calibrated", extension, sep = ""), 
+                quality = 1)
+        }
+    }
+    return(list(modelR, modelG, modelB))
+}
+```
+
+#Finding all parameters for colorChecker
+```{r, include=FALSE, echo=FALSE}
+pre = "JPEG_image"
+out = "Calibrated_image"
+ext = ".jpeg"
+  
+# fichiers <- list.files(path="TIFF_image", pattern=".tiff", full.names = TRUE)
+# 
+# for (im in fichiers){
+#   tiff <- readTIFF(im, native=FALSE)
+#   targ = paste0(pre, substr(im,12,nchar(im)-5),".jpeg")
+#   writeJPEG(tiff, target=targ, quality = 1)
+# }
+
+fichiers2 <- list.files(path="JPEG_image", pattern=".jpeg", full.names = FALSE)
+
+for (i in 1:length(fichiers2)){
+  fichiers2[i] <- strtrim(fichiers2[i], nchar(fichiers2[i])-5)
+}
+
+fichiers2 <- fichiers2[2:length(fichiers2)]
+```
+
+#TO RUN IN THE CONSOLE with the right wd !
+```{r, include=FALSE, echo=FALSE}
+colorChecker2(fichiers2, prepath=pre, outpath = out, extension=".jpeg")
+```
+
+#cropping images for just butterfly wings
+```{r, include=FALSE, echo=FALSE}
+fichiers3 <- list.files(path="Calibrated_image", pattern=".jpeg", full.names = FALSE)
+
+for (path in fichiers3){
+  name <- str_remove(path, "_calibrated")
+  im <- image_read(paste0(out,"/",path))
+  crop_im <- image_crop(im, "2400x2330+400+170")
+  image_write(crop_im, paste0("Cropped_image/", name), format = "jpeg")
+  gc()
+}
+```
+
+#Landmarks from csv to txt
+```{r, include=FALSE, echo=FALSE}
+#extracting or specifying IDs
+IDlist <- c("FG24.041_D", "FG24.045_D", "FG24.046_D", "FG24.047_D", "FG24.048_D", "FG24.051_D", "FG24.052_D", "FG24.053_D", "FG24.054_D", "FG24.055_D", "FG24.061_D", "FG24.062_D", "FG24.063_D", "FG24.064_D", "FG24.065_D", "FG24.066_D", "FG24.067_D", "FG24.068_D", "FG24.069_D", "FG24.070_D", "FG24.071_D", "FG24.072_D", "FG24.073_D", "FG24.074_D", "FG24.075_D", "FG24.076_D", "FG24.084_D", "FG24.085_D", "FG24.086_D", "FG24.087_D", "FG24.088_D")
+
+#changing landmarks to txt format with just X and y columns
+for (ID in IDlist){
+  temp_df <- read.csv(paste0("Landmarks.csv/",ID,"_landmarks.csv"), header = TRUE)
+  txt_df <- temp_df[,c(6,7)]
+  write.table(txt_df, paste0("Landmarks/",ID,"_landmarks.txt"), col.names = FALSE, row.names = FALSE)
+  temp_df <- read.csv(paste0("Landmarks.csv/",ID,"_landmarks2.csv"), header = TRUE)
+  txt_df <- temp_df[,c(6,7)]
+  write.table(txt_df, paste0("Landmarks/",ID,"_landmarks2.txt"), col.names = FALSE, row.names = FALSE)
+}
+
+mask_name <- c("FG24.087_D_Lforewing", "FG24.087_D_Lhindwing")
+#same for the four masks files
+for (mask in mask_name){
+  temp_df <- read.csv(paste0("Landmarks.csv/mask/",mask,".csv"), header = TRUE)
+  txt_df <- temp_df[,c(6,7)]
+  write.table(txt_df, paste0("Landmarks/mask/",mask,".txt"), col.names = FALSE, row.names = FALSE)
+}
+```
+
+#Preparing the lists for aligning images
+```{r, include=FALSE, echo=FALSE}
+#making the lists for patternize
+wings_list <- makeList(IDlist, type = "image", prepath = "Cropped_image/", extension=".jpeg")
+
+landmarkList <- makeList(IDlist, type = "landmark", prepath = "Landmarks/", extension = "_landmarks.txt")
+landmarkhindList <- makeList(IDlist, type = "landmark", prepath = "Landmarks/", extension = "_landmarks2.txt")
+
+#set target as ID 87
+target <- landmarkList[["FG24.087_D"]]
+target2 <- landmarkhindList[["FG24.087_D"]]
+
+#Setting up the masks that keeps the 4 wings and exclude the background
+mask1 <- read.table("Landmarks/mask/FG24.087_D_Lforewing.txt", header=FALSE)
+mask2 <- read.table("Landmarks/mask/FG24.087_D_Lhindwing.txt", header=FALSE)
+```
+
+#Aligning images
+```{r, include=FALSE, echo=FALSE}
+#aligning the wings
+imageList_aligned <- alignLan(wings_list, landmarkList, transformRef = target,
+                              adjustCoords = FALSE,
+                              plotTransformed = T,
+                              resampleFactor = 5,
+                              cartoonID = ('FG24.087_D'),
+                              maskOutline = mask1,
+                              inverse = FALSE,
+                              removebg = 170)
+
+aligned_85 <- alignLan(wings_list[c("FG24.085_D","FG24.087_D")], landmarkList[c("FG24.085_D","FG24.087_D")], transformRef = target,
+                              adjustCoords = FALSE,
+                              plotTransformed = T,
+                              resampleFactor = 5,
+                              cartoonID = ('FG24.087_D'),
+                              maskOutline = mask1,
+                              inverse = FALSE,
+                              removebg = 190)
+
+imageList_aligned["FG24.085_D"] <- aligned_85["FG24.085_D"]
+
+hind_aligned <- alignLan(wings_list, landmarkhindList, transformRef = target2,
+                              adjustCoords = FALSE,
+                              plotTransformed = T,
+                              resampleFactor = 5,
+                              cartoonID = ('FG24.087_D'),
+                              maskOutline = mask2,
+                              inverse = FALSE,
+                              removebg = 186)
+# save RDS file
+saveRDS(imageList_aligned, "rds_file/imageList_aligned.rds")
+saveRDS(hind_aligned, "rds_file/hind_aligned.rds")
+```
+
+#Selecting the color palette to work with forewings
+```{r, include=FALSE, echo=FALSE}
+#loading images
+imageList_aligned <- readRDS("rds_file/imageList_aligned.rds")
+
+#loading the package
+library(recolorize)
+
+# convert from RasterBricks to image arrays using the brick_to_array function
+imgs <- lapply(imageList_aligned, brick_to_array)
+names(imgs) <- names(imageList_aligned)
+
+# save raster extents for later conversion:
+extent_list <- lapply(imageList_aligned, raster::extent)
+
+# make an empty list for storing the recolorize objects
+rc_list <- vector("list", length(imgs))
+names(rc_list) <- names(imgs)
+
+for (i in 1:length(imgs)) {
+  rc_list[[i]] <- recolorize2(imgs[[i]], method = "kmeans", n=3,
+                              plotting = FALSE)
+}
+
+# get a dataframe of all colors:
+all_palettes <- do.call(rbind, lapply(rc_list, function(i) i$centers))
+
+# and for cluster sizes (as a proportion of their original image):
+all_sizes <- do.call(cbind, lapply(rc_list, function(i) i$sizes))
+
+# plot colors using hclust and return grouping list:
+par(mar = rep(2, 4))
+cluster_list <- hclust_color(all_palettes, n_final = 4)
+
+# make an empty matrix for storing the new palette
+morpho_palette <- matrix(NA, ncol = 3, nrow = length(cluster_list))
+
+# for every color in cluster_list...
+for (i in 1:length(cluster_list)) {
+  
+  # get the center indices
+  idx <- cluster_list[[i]]
+  
+  # get the average value for each channel, using cluster size to get a weighted average
+  ctr <- apply(all_palettes, 2, 
+                 function(j) weighted.mean(j[idx], 
+                                           w = all_sizes[idx]))
+  
+  # store in the palette matrix
+  morpho_palette[i, ] <- ctr
+}
+
+# check that our colors seem reasonable
+par(mar = rep(0, 4))
+plotColorPalette(morpho_palette)
+
+morpho_palette2 <- morpho_palette
+morpho_palette2[1,] <- c(0.3176471, 0.3607843, 0.36862745)
+morpho_palette2[2,] <- c(0.5130015, 0.5353847, 0.48962950)
+morpho_palette2[3,] <- c(0.1433055, 0.1026748, 0.09598966)
+morpho_palette2[4,] <- c(0.5137255, 0.3568627, 0.11764706)
+
+plotColorPalette(morpho_palette2)
+
+impose_list <- lapply(imgs, function(i) imposeColors(i, morpho_palette2, 
+                                                     adjust_centers = FALSE, 
+                                                     plotting = FALSE))
+
+for (i in 1:length(impose_list)) {
+  plot(impose_list[[i]])
+}
+
+# # let's look at our palettes!
+# layout(matrix(1:20, nrow = 4))
+# par(mar = rep(0, 4))
+# for (i in impose_list) {
+#   plotColorPalette(i$centers, i$sizes)
+# }
+```
+
+#Selecting the color palette to work with for hindwings
+```{r, include=FALSE, echo=FALSE}
+#loading images
+hind_aligned <- readRDS("rds_file/hind_aligned.rds")
+
+#loading the package
+library(recolorize)
+
+# convert from RasterBricks to image arrays using the brick_to_array function
+imgs_hind <- lapply(hind_aligned, brick_to_array)
+names(imgs_hind) <- names(hind_aligned)
+
+# save raster extents for later conversion:
+extent_list_hind <- lapply(hind_aligned, raster::extent)
+
+# make an empty list for storing the recolorize objects
+rc_list_hind <- vector("list", length(imgs_hind))
+names(rc_list_hind) <- names(imgs_hind)
+
+for (i in 1:length(imgs_hind)) {
+  rc_list_hind[[i]] <- recolorize2(imgs_hind[[i]], method = "kmeans", n=5,
+                              plotting = FALSE)
+}
+
+# get a dataframe of all colors:
+all_palettes_hind <- do.call(rbind, lapply(rc_list_hind, function(i) i$centers))
+
+# and for cluster sizes (as a proportion of their original image):
+all_sizes_hind <- do.call(cbind, lapply(rc_list_hind, function(i) i$sizes))
+
+# plot colors using hclust and return grouping list:
+par(mar = rep(2, 4))
+cluster_list_hind <- hclust_color(all_palettes_hind, n_final = 4)
+
+# make an empty matrix for storing the new palette
+morpho_palette_hind <- matrix(NA, ncol = 3, nrow = length(cluster_list_hind))
+
+# for every color in cluster_list...
+for (i in 1:length(cluster_list_hind)) {
+  
+  # get the center indices
+  idx <- cluster_list_hind[[i]]
+  
+  # get the average value for each channel, using cluster size to get a weighted average
+  ctr <- apply(all_palettes_hind, 2, 
+                 function(j) weighted.mean(j[idx], 
+                                           w = all_sizes_hind[idx]))
+  
+  # store in the palette matrix
+  morpho_palette_hind[i, ] <- ctr
+}
+
+# check that our colors seem reasonable
+par(mar = rep(0, 4))
+plotColorPalette(morpho_palette_hind)
+
+morpho_palette2_hind <- morpho_palette_hind[-3,]
+morpho_palette2_hind[1,] <- c(0.5561577, 0.56080639, 0.50203665)
+morpho_palette2_hind[2,] <- c(0.1223087, 0.08726718, 0.08392289)
+morpho_palette2_hind[3,] <- c(0.4811294, 0.40107321, 0.26685166)
+plotColorPalette(morpho_palette2_hind)
+
+morpho_palette2_hind[1,] <- c(0.5130015, 0.5353847, 0.48962950)
+morpho_palette2_hind[2,] <- c(0.1433055, 0.1026748, 0.09598966)
+morpho_palette2_hind[3,] <- c(0.5137255, 0.3568627, 0.11764706)
+plotColorPalette(morpho_palette2_hind)
+
+impose_list_hind <- lapply(imgs_hind, function(i) imposeColors(i, morpho_palette2_hind, 
+                                                     adjust_centers = FALSE, 
+                                                     plotting = FALSE))
+
+for (i in 1:length(impose_list_hind)) {
+  plot(impose_list_hind[[i]])
+}
+
+# # let's look at our palettes!
+# layout(matrix(1:20, nrow = 4))
+# par(mar = rep(0, 4))
+# for (i in impose_list) {
+#   plotColorPalette(i$centers, i$sizes)
+# }
+```
+
+#Recolor_selection function
+```{r}
+#loading images
+imageList_aligned <- readRDS("rds_file/imageList_aligned.rds")
+
+recolor_selection <- function(rc_obj, color_to = 1, 
+                       selection = "rect", 
+                       locator_color = "red",
+                       n_polygons = 1,
+                       plotting = TRUE,
+                       recolor_background = FALSE) {
+  # store old map
+  rc_original_pix <- rc_obj$pixel_assignments
+  
+  # choose region selection method:
+  selection <- match.arg(arg = selection, choices = c("rectangle", "polygon"))
+  
+  # make image:
+  img <- recoloredImage(rc_obj, type = "raster")
+  layout(1); par(mar = rep(0, 4))
+  plot(img)
+  
+  # plot horizontal and vertical bounds to keep user from selecting
+  # outside the image boundaries:
+  abline(h = c(0, dim(img)[1]), v = c(0, dim(img)[2]), col = "darkgrey")
+  
+  # user-select area and change color of pixels inside region of interest
+  if (selection == "rectangle") {
+    
+    # select a rectangle
+    u <- spatstat.geom::clickbox(add = TRUE, col = locator_color)
+    
+    # store the input
+    u$xrange <- round(u$xrange)
+    u$yrange <- round(u$yrange)
+    
+    # flip the yrange (in the image, y is numbered bottom to top, but in an array
+    # it's indexed top to bottom)
+    u$yrange <- dim(img)[1] - u$yrange
+    
+    # and change pixel assignments to new color
+    rc_obj$pixel_assignments[u$yrange[1]:u$yrange[2],
+                             u$xrange[1]:u$xrange[2]] <- color_to
+    
+  } else if (selection == "polygon") {
+    
+    # select polygon(s)
+    u <- spatstat.geom::clickpoly(add = TRUE, col = locator_color, np = n_polygons)
+    u$xrange <- round(u$xrange)
+    u$yrange <- round(u$yrange)
+    u$bdry <- lapply(u$bdry, \(x) lapply(x, round))
+    
+    # find all pixels inside of the bounding box for the polygon(s)
+    xy <- expand.grid(u$xrange[1]:u$xrange[2], u$yrange[1]:u$yrange[2])
+    
+    # for every polygon...
+    for (i in 1:length(u$bdry)) {
+      pol <- u$bdry[[i]]
+      # find which points in the bounding box fall inside the polygon
+      if (i == 1) {
+        col_idx <- xy[which(secr::pointsInPolygon(xy, do.call(cbind, pol), logical = T)), ]
+      } else {
+        new_idx <- xy[which(secr::pointsInPolygon(xy, do.call(cbind, pol), logical = T)), ]
+        col_idx <- rbind(col_idx, new_idx)
+      }
+    }
+      
+      # reverse x/y order, y
+      col_idx <- as.matrix(col_idx[ , 2:1])
+      col_idx[,1] <- dim(img)[1] - col_idx[,1]
+      
+      # and change color
+      rc_obj$pixel_assignments[col_idx] <- color_to
+      
+  }
+  
+  # make sure the background is still transparent
+  if (!recolor_background) {
+    rc_obj$pixel_assignments[rc_original_pix == 0] <- 0
+  }
+  
+  # if plotting, plot
+  if (plotting) {
+    
+    # draw box or polygon around the region that was changed
+    plot_region <- function() {
+      xdim <- dim(rc_obj$pixel_assignments)[2]
+      ydim <- dim(rc_obj$pixel_assignments)[1]
+      if (selection == "rectangle") {
+        rect(xleft = u$xrange[1] / xdim, xright = u$xrange[2] / xdim,
+             ybottom = 1 - u$yrange[1] / ydim, ytop = 1 - u$yrange[2] / ydim,
+             border = locator_color)
+      } else {
+        for (i in 1:length(u$bdry)) {
+          polygon(u$bdry[[i]]$x / xdim, 
+                  u$bdry[[i]]$y / ydim, border = locator_color)
+        }
+      }
+    }
+    
+    # reset graphical parameters when function exits:
+    current_par <- graphics::par(no.readonly = TRUE)
+    on.exit(graphics::par(current_par))
+    
+    # set layout
+    graphics::layout(matrix(1:3, nrow = 1),
+                     widths = rep(1, 3))
+    
+    # plot original image
+    graphics::par(mar = c(0, 0, 2, 0))
+    recolorize::plotImageArray(rc_obj$original_img,
+                               main = "Recolored original")
+    plot_region()
+    
+    # plot old zone map with polygon/rectangle
+    graphics::par(mar = c(0, 0, 2, 0))
+    recolorize::plotImageArray(constructImage(rc_original_pix, rc_obj$centers),
+                               main = "Input")
+    plot_region()
+    
+    # plot new color map & palette
+    graphics::par(mar = c(0, 0, 2, 0))
+    recolorize::plotImageArray(recoloredImage(rc_obj),
+                               main = "Output")
+    plot_region()
+  }
+  return(rc_obj)
+}
+```
+
+#Cleaning manually holes in wings
+```{r, include=FALSE, echo=FALSE}
+#for forewings
+for (i in c(2, 5, 6, 8, 10, 18)){
+  if (i %in% c(2, 5, 18)){
+    rc_obj <- impose_list[[i]]
+    rc_obj_2 <- recolor_selection(rc_obj, color_to = 4, 
+                              selection = "polygon", 
+                              locator_color = "yellow", 
+                              n_polygons = 1, plotting = TRUE, recolor_background = FALSE)
+    impose_list[[i]] <- rc_obj_2
+  }
+  if (i %in% c(5,6)){
+    rc_obj <- impose_list[[i]]
+    rc_obj_2 <- recolor_selection(rc_obj, color_to = 3, 
+                              selection = "polygon", 
+                              locator_color = "yellow", 
+                              n_polygons = 1, plotting = TRUE, recolor_background = TRUE)
+    impose_list[[i]] <- rc_obj_2
+  }
+  if (i %in% c(8, 10)){
+    rc_obj <- impose_list[[i]]
+    rc_obj_2 <- recolor_selection(rc_obj, color_to = 1, 
+                              selection = "polygon", 
+                              locator_color = "yellow", 
+                              n_polygons = 1, plotting = TRUE, recolor_background = TRUE)
+    impose_list[[i]] <- rc_obj_2
+  }
+}
+
+#for hindwings
+for (i in c(1, 4, 7, 9, 10, 11, 13, 17, 18, 19, 20, 22, 23, 24, 29, 30)){
+  if (i %in% c(7,10,18,23)){
+    rc_obj <- impose_list_hind[[i]]
+    rc_obj_2 <- recolor_selection(rc_obj, color_to = 1, 
+                              selection = "polygon", 
+                              locator_color = "yellow", 
+                              n_polygons = 1, plotting = TRUE, recolor_background = TRUE)
+    impose_list_hind[[i]] <- rc_obj_2
+  }
+  if (i %in% c(1,4,9,11,13,19,20,22,24,29,30)){
+    rc_obj <- impose_list_hind[[i]]
+    rc_obj_2 <- recolor_selection(rc_obj, color_to = 2, 
+                              selection = "polygon", 
+                              locator_color = "yellow", 
+                              n_polygons = 1, plotting = TRUE, recolor_background = TRUE)
+    impose_list_hind[[i]] <- rc_obj_2
+  }
+  if (i %in% c(17)){
+    rc_obj <- impose_list_hind[[i]]
+    rc_obj_2 <- recolor_selection(rc_obj, color_to = 3, 
+                              selection = "polygon", 
+                              locator_color = "yellow", 
+                              n_polygons = 1, plotting = TRUE, recolor_background = TRUE)
+    impose_list_hind[[i]] <- rc_obj_2
+  }
+}
+```
+
+#Cleaning small dots of the wrong color in the middle of another color
+```{r, include=FALSE, echo=FALSE}
+# make an empty list for storing the recolorize objects
+absorbed_list <- impose_list
+
+for (i in 1:length(impose_list)) {
+  for (j in 1:2){
+    absorbed_list[[i]] <- absorbLayer(absorbed_list[[i]],
+                                      layer_idx = j,
+                                      size_condition = function(s) s<70,
+                                      plotting = FALSE)
+  }
+  absorbed_list[[i]] <- absorbLayer(absorbed_list[[i]],
+                                      layer_idx = 3,
+                                      size_condition = function(s) s<50,
+                                      plotting = FALSE)
+}
+
+# make an empty list for storing the recolorize objects
+absorbed_list_hind <- impose_list_hind
+
+for (i in 1:length(impose_list_hind)) {
+  for (j in 1:2){
+    absorbed_list_hind[[i]] <- absorbLayer(absorbed_list_hind[[i]],
+                                      layer_idx = j,
+                                      size_condition = function(s) s<70,
+                                      plotting = FALSE)
+  }
+  absorbed_list_hind[[i]] <- absorbLayer(absorbed_list_hind[[i]],
+                                      layer_idx = 3,
+                                      size_condition = function(s) s<20,
+                                      plotting = FALSE)
+}
+
+
+for (i in 1:length(absorbed_list_hind)) {
+  plot(absorbed_list_hind[[i]])
+}
+
+```
+
+#Merging my blue layers ofr the forewings
+```{r, include=FALSE, echo=FALSE}
+# make an empty list for storing the recolorize objects
+final_list <- absorbed_list
+
+for (i in 1:length(final_list)){
+  final_list[[i]] <- mergeLayers(final_list[[i]], merge_list = c(1, 2), plotting = FALSE, color_to = morpho_palette2[2,])
+  plot(final_list[[i]])
+}
+```
+
+#Saving the cleaned recolorize images as patternize and the original image for plotting on the PCA later on
+```{r, include=FALSE, echo=FALSE}
+# convert to patternize:
+patternize_list <- lapply(final_list, recolorize_to_patternize)
+
+# save RDS file
+saveRDS(patternize_list, "rds_file/processed_images.rds")
+
+or_list <- vector("list", length(final_list))
+names(or_list) <- names(final_list)
+for (i in 1:length(final_list)){
+  or_list[[i]] <- final_list[[i]]$original_img
+}
+saveRDS(or_list, "rds_file/or_images.rds")
+
+
+# convert to patternize:
+patternize_list_hind <- lapply(absorbed_list_hind, recolorize_to_patternize)
+
+# save RDS file
+saveRDS(patternize_list_hind, "rds_file/processed_images_hind.rds")
+
+or_list_hind <- vector("list", length(absorbed_list_hind))
+names(or_list_hind) <- names(absorbed_list_hind)
+for (i in 1:length(absorbed_list_hind)){
+  or_list_hind[[i]] <- absorbed_list_hind[[i]]$original_img
+}
+saveRDS(or_list_hind, "rds_file/or_images_hind.rds")
+```
+
+#Creating patPCA function (bc I can't seem to import it...)
+```{r}
+#' Run a PCA on multiple colors
+#' 
+#' Runs a PCA on two or more colors from a patternize raster list.
+#' 
+#' @param rList List of raster objects, where each element is an individual, and
+#'   the list elements of that element are individual color pattern layers for
+#'   that individual.
+#' @param which_colors Either "all" (the default) or a numeric vector indicating
+#'   which colors to use for the combined PCA.
+#' @param PCx,PCy Which principal components to plot on the X and Y axes, if
+#'   plotting.
+#' @param plotting Logical. Plot PCA results?
+#' @param quietly Logical. Print progress messages?
+#' 
+#' @return A [stats::prcomp] object for the specified colors.
+#' 
+#' @export
+patPCA_total <- function(rList, which_colors = "all",
+                         PCx = 1, PCy = 2,
+                         plotting = TRUE, 
+                         quietly = TRUE) {
+  
+  # determine the number of colors
+  n_layers <- length(rList[[1]])
+  IDlist <- names(rList)
+  
+  # restructure the raster list by layer instead of image
+  rList <- lapply(1:n_layers,
+                  function(i) lapply(rList,
+                                     function(j) j[[i]]))
+  
+  # redefine to only specified layers (if not "all")
+  if (sum(which_colors != "all") > 0) {
+    if (!is.numeric(which_colors)) {
+      stop("'which_colors' must be 'all' or a numeric vector indicating which
+           colors should be used for the summed PCA")
+    }
+    rList <- rList[which_colors]
+    n_layers <- length(which_colors)
+  }
+  
+  
+  if (!quietly) { message("Summing raster lists...") }
+  
+  # sum rasters after masking
+  summedRasters <- lapply(rList,
+                          function(i) patternize::sumRaster(i, IDlist, type = "RGB"))
+  
+  if (!quietly) { message("Making dataframe from rasters...") }
+  
+  # make a list for storing the raster dataframes
+  rasDFlist <- vector("list", length = n_layers)
+  
+  # make one dataframe per layer
+  for (l in 1:n_layers) {
+    for (r in 1:length(rList[[1]])) {
+      
+      # isolate layer from image
+      layer <- rList[[l]][[r]]
+      
+      # swap out NA values
+      layer[is.na(layer)] <- 0
+      
+      # convert to a dataframe
+      ras <- raster::as.data.frame(layer)
+      
+      # either start or append the dataframe for this layer
+      if (r == 1) { rasDF <- ras } else { rasDF <- cbind(rasDF, ras) }
+    }
+    
+    # set column names and add to the list
+    colnames(rasDF) <- names(rList[[l]])
+    rasDFlist[[l]] <- rasDF
+  }
+  
+  # make a stacked version for the full PCA
+  rasDFstack <- do.call(rbind, rasDFlist)
+  
+  if (!quietly) { message(paste("Running PCA on", n_layers, 
+                                "colors and", ncol(rasDFstack), "images...")) }
+  
+  # run a PCA
+  comp <- prcomp(t(rasDFstack))
+  pcdata <- comp$x
+  rotation <- comp$rotation
+  summ <- summary(comp)
+  
+  if (!quietly) { message("done") }
+  
+  if (plotting) {
+    xrange <- range(pcdata[ , PCx])
+    yrange <- range(pcdata[ , PCy])
+    
+    # be polite
+    current_par <- par(no.readonly = TRUE)
+    on.exit(par(current_par))
+    
+    # set parameters and plot
+    par(mfrow=c(1,1), mar=c(4,4,2,2))
+    plot(comp$x[,c(PCx,PCy)], col='black', pch=19,
+         xlim = xrange, ylim = yrange,
+         xlab=paste0('PC',PCx,' (', round(summ$importance[2,PCx]*100, 1), ' %)'),
+         ylab=paste0('PC',PCy,' (', round(summ$importance[2,PCy]*100, 1), ' %)'))
+    
+  }
+  
+  # return the pca:
+  return(comp)
+  
+}
+```
+
+#Patternize analysis of the images
+```{r, include=FALSE, echo=FALSE}
+#loading images
+patternize_list <- readRDS("rds_file/processed_images.rds")
+
+# and set extents again:
+for (i in 1:length(patternize_list)) {
+  for (j in 1:length(patternize_list[[1]])) {
+    raster::extent(patternize_list[[i]][[j]]) <- extent_list[[i]]
+  }
+}
+
+#NOW for forewings we merge the layer 3 and 4 which were useful 
+# Function to merge Layer 3 and Layer 4, then remove Layer 4
+merge_layers <- function(raster_list) {
+  raster_list[[3]] <- raster::overlay(raster_list[[3]], raster_list[[4]], fun = function(x, y) ifelse(x == 1 | y == 1, 1, 0))
+  raster_list <- raster_list[1:3]  # Remove Layer 4
+  return(raster_list)
+}
+# Apply function to each element of patternize_list
+patternize_list <- lapply(patternize_list, merge_layers)
+
+morpho_pca <- patPCA_total(patternize_list, quietly = FALSE)
+summary(morpho_pca) #we keep 17 axis
+test_data <- as.data.frame(morpho_pca$x)
+test_data$ind <- str_sub(rownames(test_data), 1, 8)
+zygo_df <- read.table("../../Documents/CollègeFr/Stage/Zygosity.txt", header=TRUE)
+test_data <- full_join(test_data, zygo_df, by=join_by(ind==ind))
+# sort out the individual location and color
+# color
+col <- rep(NA, length(test_data$Bioinformatic.name))
+col[grep("blue", test_data$Bioinformatic.name)] <- "blue"
+col[grep("oran", test_data$Bioinformatic.name)] <- "orange"
+# location
+loc <- rep(NA, length(test_data$Bioinformatic.name))
+loc[grep("CAC", test_data$Bioinformatic.name)] <- "Cacao"
+loc[grep("KAW", test_data$Bioinformatic.name)] <- "Kaw"
+loc[grep("PAT", test_data$Bioinformatic.name)] <- "Patawa"
+# remake data.frame
+pca <- as_tibble(data.frame(test_data, col, loc))
+#tests
+model <- lm(cbind(PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC8, PC9, PC10, PC11, PC12, PC13, PC14, PC15, PC16, PC17) ~ col, pca)
+Manova(model, test.statistic = "Pillai")
+model <- lm(cbind(PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC8, PC9, PC10, PC11, PC12, PC13, PC14, PC15, PC16, PC17) ~ Zygosity, pca)
+Manova(model, test.statistic = "Pillai")
+
+# plot pca
+b <- ggplot(pca, aes(PC1, PC2, col = Zygosity)) + 
+  geom_point(size = 3) +
+  scale_colour_manual(name="Genotype", labels=c("B/B", "B/O", "O/O"), limits=c("HOM_BL","HET","HOM_OR"), values = c("deepskyblue2", "goldenrod", "darkorange2"),) +
+  xlab(paste0('PC1 (', round(summary(morpho_pca)$importance[2,1]*100, 1), ' %)')) +
+  ylab(paste0('PC2 (', round(summary(morpho_pca)$importance[2,2]*100, 1), ' %)')) +
+  coord_equal() +
+  theme_classic()
+
+#loading images
+patternize_list_hind <- readRDS("rds_file/processed_images_hind.rds")
+
+# and set extents again:
+for (i in 1:length(patternize_list_hind)) {
+  for (j in 1:length(patternize_list_hind[[1]])) {
+    raster::extent(patternize_list_hind[[i]][[j]]) <- extent_list_hind[[i]]
+  }
+}
+
+#source("patPCA_total.R")
+morpho_pca_hind <- patPCA_total(patternize_list_hind, quietly = FALSE)
+summary(morpho_pca_hind) #we keep 22 axis
+test_data <- as.data.frame(morpho_pca_hind$x)
+test_data$ind <- str_sub(rownames(test_data), 1, 8)
+test_data <- full_join(test_data, zygo_df, by=join_by(ind==ind))
+# sort out the individual location and color
+# color
+col <- rep(NA, length(test_data$Bioinformatic.name))
+col[grep("blue", test_data$Bioinformatic.name)] <- "blue"
+col[grep("oran", test_data$Bioinformatic.name)] <- "orange"
+# location
+loc <- rep(NA, length(test_data$Bioinformatic.name))
+loc[grep("CAC", test_data$Bioinformatic.name)] <- "Cacao"
+loc[grep("KAW", test_data$Bioinformatic.name)] <- "Kaw"
+loc[grep("PAT", test_data$Bioinformatic.name)] <- "Patawa"
+# remake data.frame
+pca <- as_tibble(data.frame(test_data, col, loc))
+#tests
+model <- lm(cbind(PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC8, PC9, PC10, PC11, PC12, PC13, PC14, PC15, PC16, PC17, PC18, PC19, PC20, PC21, PC22) ~ col, pca)
+Manova(model, test.statistic = "Pillai")
+model <- lm(cbind(PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC8, PC9, PC10, PC11, PC12, PC13, PC14, PC15, PC16, PC17, PC18, PC19, PC20, PC21, PC22) ~ Zygosity, pca)
+Manova(model, test.statistic = "Pillai")
+
+# plot pca
+c <- ggplot(pca, aes(PC1, PC2, col = Zygosity)) + 
+  geom_point(size = 3) +
+  scale_colour_manual(name="Genotype", labels=c("B/B", "B/O", "O/O"), limits=c("HOM_BL","HET","HOM_OR"), values = c("deepskyblue2", "goldenrod", "darkorange2"),) +
+  xlab(paste0('PC1 (', round(summary(morpho_pca_hind)$importance[2,1]*100, 1), ' %)')) +
+  ylab(paste0('PC2 (', round(summary(morpho_pca_hind)$importance[2,2]*100, 1), ' %)')) +
+  coord_equal() +
+  theme_classic()
+```
+
+#Plot with wings pattern
+```{r}
+library(ggplot2)
+library(gridGraphics)
+library(grid)
+library(gridExtra)
+
+plot_base <- function(){
+  #first, make a blank plot
+  PCx <- 1; PCy <- 2
+  pca_summary <- summary(morpho_pca)
+  limits <- apply(morpho_pca$x[ , c(PCx, PCy)], 2, range)
+  par(mar = c(4, 4, 2, 1), mgp=c(2, 0.3, 0))
+  plot(morpho_pca$x[ , c(PCx, PCy)], type = "n",
+       asp = 1,
+       xlim = limits[ , 1] + c(-20, 10), 
+       ylim = limits[ , 2] + c(-10, 10),
+       bty = "l",
+       cex.axis=0.9,
+       las=1,
+       tck=-0.003,
+       xlab=paste0('PC1 (', round(pca_summary$importance[2, PCx]*100, 1), ' %)'),
+       ylab=paste0('PC2 (', round(pca_summary$importance[2, PCy]*100, 1), ' %)'))
+  
+  #load images
+  original_list <- readRDS("rds_file/or_images.rds")
+  
+  # then add images:
+  for (i in 1:length(original_list)) {
+    recolorize::add_image(original_list[[i]], 
+              x = morpho_pca$x[i, PCx]+10,
+              y = morpho_pca$x[i, PCy]+20,
+              width = 20, angle=180)
+  }
+}
+
+plot_base()
+grid.newpage()
+grid.echo(plot_base())
+g1 <- grid.grab()
+
+# Afficher côte à côte
+ggarrange(g1, b, labels = c("A", "B"), widths = c(1,1))
+
+plot_base <- function(){
+  # first, make a blank plot
+  PCx <- 1; PCy <- 2
+  pca_summary <- summary(morpho_pca_hind)
+  limits <- apply(morpho_pca_hind$x[ , c(PCx, PCy)], 2, range)
+  par(mar = c(4, 4, 2, 1), mgp=c(2, 0.3, 0))
+  plot(morpho_pca_hind$x[ , c(PCx, PCy)], type = "n",
+       asp = 1,
+       bty = "l",
+       cex.axis=0.9,
+       las=1,
+       tck=-0.004,
+       xlim = limits[ , 1] + c(15, 0),
+       ylim = limits[ , 2] + c(0, 10),
+       xlab=paste0('PC1 (', round(pca_summary$importance[2, PCx]*100, 1), ' %)'),
+       ylab=paste0('PC2 (', round(pca_summary$importance[2, PCy]*100, 1), ' %)'))
+  
+  #load images
+  original_list <- readRDS("rds_file/or_images_hind.rds")
+  
+  # then add images:
+  for (i in 1:length(original_list)) {
+    recolorize::add_image(original_list[[i]], 
+              x = morpho_pca_hind$x[i, PCx]+20,
+              y = morpho_pca_hind$x[i, PCy]+20,
+              width = 15, angle=180)
+  }
+}
+plot_base()
+grid.newpage()
+grid.echo(plot_base())
+g2 <- grid.grab()
+
+# Afficher côte à côte
+ggarrange(g2, c, labels = c("A", "B"), widths = c(1,1))
+```
+
+##let's merge my raster of fore and hind wings
+```{r}
+patPCA_wings <- function(rList1, rList2, LayerOrder, which_colors = "all",
+                         PCx = 1, PCy = 2,
+                         plotting = TRUE, 
+                         quietly = TRUE) {
+  
+  # determine the number of colors
+  n_layers <- length(rList1[[1]])
+  IDlist <- names(rList1)
+  
+  # restructure the raster list by layer instead of image
+  rList1 <- lapply(1:n_layers,
+                  function(i) lapply(rList1,
+                                     function(j) j[[i]]))
+  rList2 <- lapply(1:n_layers,
+                  function(i) lapply(rList2,
+                                     function(j) j[[i]]))
+  
+  if (!quietly) { message("Reordering layers...") }
+  
+  #reorder the layers accordingly
+  if (any(LayerOrder!=1:length(LayerOrder))){
+    rList2[1:length(rList2)] <- rList2[LayerOrder]
+  }
+  
+  # redefine to only specified layers (if not "all")
+  if (sum(which_colors != "all") > 0) {
+    if (!is.numeric(which_colors)) {
+      stop("'which_colors' must be 'all' or a numeric vector indicating which
+           colors should be used for the summed PCA")
+    }
+    rList1 <- rList1[which_colors]
+    n_layers <- length(which_colors)
+  }
+  
+  if (!quietly) { message("Summing raster lists...") }
+  
+  # sum rasters after masking
+  summedRasters <- lapply(rList1,
+                          function(i) patternize::sumRaster(i, IDlist, type = "RGB"))
+  
+  if (!quietly) { message("Making dataframe from rasters...") }
+  
+  # make a list for storing the raster dataframes
+  rasDFlist <- vector("list", length = n_layers)
+  
+  # make one dataframe per layer
+  for (l in 1:n_layers) {
+    for (r in 1:length(rList1[[1]])) {
+      
+      # isolate layer from image
+      layer1 <- rList1[[l]][[r]]
+      layer2 <- rList2[[l]][[r]]
+      
+      # swap out NA values
+      layer1[is.na(layer1)] <- 0
+      layer2[is.na(layer2)] <- 0
+      
+      # convert to a dataframe
+      ras1 <- raster::as.data.frame(layer1)
+      ras2 <- raster::as.data.frame(layer2)
+      
+      #combine layers
+      ras <- rbind(ras1, ras2)
+      
+      # either start or append the dataframe for this layer
+      if (r == 1) { rasDF <- ras } else { rasDF <- cbind(rasDF, ras) }
+    }
+    
+    # set column names and add to the list
+    colnames(rasDF) <- names(rList1[[l]])
+    rasDFlist[[l]] <- rasDF
+  }
+  
+  # make a stacked version for the full PCA
+  rasDFstack <- do.call(rbind, rasDFlist)
+  
+  if (!quietly) { message(paste("Running PCA on", n_layers, 
+                                "colors and", ncol(rasDFstack), "images...")) }
+  
+  # run a PCA
+  comp <- prcomp(t(rasDFstack))
+  pcdata <- comp$x
+  rotation <- comp$rotation
+  summ <- summary(comp)
+  
+  if (!quietly) { message("done") }
+  
+  if (plotting) {
+    xrange <- range(pcdata[ , PCx])
+    yrange <- range(pcdata[ , PCy])
+    
+    # be polite
+    current_par <- par(no.readonly = TRUE)
+    on.exit(par(current_par))
+    
+    # set parameters and plot
+    par(mfrow=c(1,1), mar=c(4,4,2,2))
+    plot(comp$x[,c(PCx,PCy)], col='black', pch=19,
+         xlim = xrange, ylim = yrange,
+         xlab=paste0('PC',PCx,' (', round(summ$importance[2,PCx]*100, 1), ' %)'),
+         ylab=paste0('PC',PCy,' (', round(summ$importance[2,PCy]*100, 1), ' %)'))
+    
+  }
+  
+  # return the pca:
+  return(comp)
+  
+}
+
+morpho_pca_wings <- patPCA_wings(patternize_list, patternize_list_hind, c(2, 3, 1), quietly = FALSE)
+summary(morpho_pca_wings)#we keep 21 axis
+test_data <- as.data.frame(morpho_pca_wings$x)
+test_data$ind <- str_sub(rownames(test_data), 1, 8)
+test_data <- full_join(test_data, zygo_df, by=join_by(ind==ind))
+# sort out the individual location and color
+# color
+col <- rep(NA, length(test_data$Bioinformatic.name))
+col[grep("blue", test_data$Bioinformatic.name)] <- "blue"
+col[grep("oran", test_data$Bioinformatic.name)] <- "orange"
+# location
+loc <- rep(NA, length(test_data$Bioinformatic.name))
+loc[grep("CAC", test_data$Bioinformatic.name)] <- "Cacao"
+loc[grep("KAW", test_data$Bioinformatic.name)] <- "Kaw"
+loc[grep("PAT", test_data$Bioinformatic.name)] <- "Patawa"
+# remake data.frame
+pca <- as_tibble(data.frame(test_data, col, loc))
+#tests
+model <- lm(cbind(PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC8, PC9, PC10, PC11, PC12, PC13, PC14, PC15, PC16, PC17, PC18, PC19, PC20, PC21) ~ col, pca)
+Manova(model, test.statistic = "Pillai")
+model <- lm(cbind(PC1, PC2, PC3, PC4, PC5, PC6, PC7, PC8, PC9, PC10, PC11, PC12, PC13, PC14, PC15, PC16, PC17, PC18, PC19, PC20, PC21) ~ Zygosity, pca)
+Manova(model, test.statistic = "Pillai")
+
+#asses variation among group
+scores <- as.data.frame(morpho_pca_wings$x[, 1:2])
+scores$group <- pca$col
+get_ellipse_area <- function(df) {
+  cov_matrix <- cov(df[, 1:2])
+  eig_vals <- eigen(cov_matrix)$values
+  pi * sqrt(eig_vals[1]) * sqrt(eig_vals[2])
+}
+areas <- scores %>%
+  group_by(group) %>%
+  group_split() %>%
+  setNames(unique(pca$col)) %>%
+  lapply(get_ellipse_area)
+print(areas[[1]]/(areas[[2]]+areas[[1]]))
+
+# plot pca
+d <- ggplot(pca, aes(PC1, PC2, col = Zygosity)) + 
+  geom_point(size = 3) +
+  scale_colour_manual(name="Genotype", labels=c("B/B", "B/O", "O/O"), limits=c("HOM_BL","HET","HOM_OR"), values = c("deepskyblue2", "goldenrod", "darkorange2"),) +
+  xlab(paste0('PC1 (', round(summary(morpho_pca_wings)$importance[2,1]*100, 1), ' %)')) +
+  ylab(paste0('PC2 (', round(summary(morpho_pca_wings)$importance[2,2]*100, 1), ' %)')) +
+  coord_equal() +
+  theme_classic()
+
+plot_base <- function(){
+  # first, make a blank plot
+  PCx <- 1; PCy <- 2
+  pca_summary <- summary(morpho_pca_wings)
+  limits <- apply(morpho_pca_wings$x[ , c(PCx, PCy)], 2, range)
+  par(mar = c(4, 4, 2, 1), mgp=c(2, 0.3, 0))
+  plot(morpho_pca_wings$x[ , c(PCx, PCy)], type = "n",
+       asp = 1,
+       bty = "l",
+       cex.axis=0.9,
+       las=1,
+       tck=-0.003,
+       xlim = limits[ , 1] + c(0, 5), 
+       ylim = limits[ , 2] + c(-20, 10),
+       xlab=paste0('PC1 (', round(pca_summary$importance[2, PCx]*100, 1), ' %)'),
+       ylab=paste0('PC2 (', round(pca_summary$importance[2, PCy]*100, 1), ' %)'))
+  
+  #load images
+  original_fore <- readRDS("rds_file/or_images.rds")
+  original_hind <- readRDS("rds_file/or_images_hind.rds")
+  
+  # then add images:
+  for (i in 1:length(original_fore)) {
+    recolorize::add_image(original_fore[[i]], 
+              x = morpho_pca_wings$x[i, PCx]+20,
+              y = morpho_pca_wings$x[i, PCy]+15,
+              width = 15, angle=180)
+    recolorize::add_image(original_hind[[i]], 
+              x = morpho_pca_wings$x[i, PCx]+20,
+              y = morpho_pca_wings$x[i, PCy],
+              width = 15, angle=180)
+  }
+}
+plot_base()
+grid.newpage()
+grid.echo(plot_base())
+g3 <- grid.grab()
+
+# Afficher côte à côte
+ggarrange(g3, d, labels = c("A", "B"), widths = c(1,1))
+```
+
+##let's merge my raster of fore and hind wings
+```{r}
+createPhenotype(morpho_pca, c(0,40), IDlist, rasterList = imageList_aligned, cartoonID = ('FG24.087_D'))
+```

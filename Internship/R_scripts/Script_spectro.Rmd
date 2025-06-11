@@ -1,0 +1,565 @@
+---
+title: "Spectral analysis"
+author: "Matthieu Gallant Canguilhem"
+date: "2025-01-30"
+output: html_document
+editor_options:
+  chunk_output_type: console
+---
+
+# Setting the working directory for all chunks
+```{r, setup, include=FALSE}
+knitr::opts_knit$set(root.dir = '~/Documents/CollègeFr/Stage')
+setwd('~/Documents/CollègeFr/Stage')
+```
+
+
+#Uploading needed packages
+```{r, include=FALSE, echo=FALSE}
+library(ggplot2)
+library(pavo)
+library(dplyr)
+library(ggfortify)
+library(tidyverse)
+library(rstatix)
+library(ggpubr)
+```
+#Dictionnary for finding color linked to ID
+```{r, echo=FALSE}
+morph<-c(
+  "FG24.041"="blue",
+  "FG24.046"="blue",
+  "FG24.053"="blue",
+  "FG24.055"="blue",
+  "FG24.061"="blue",
+  "FG24.062"="blue",
+  "FG24.063"="blue",
+  "FG24.064"="blue",
+  "FG24.065"="blue",
+  "FG24.066"="blue",
+  "FG24.075"="blue",
+  "FG24.076"="blue",
+  "FG24.084"="blue",
+  "FG24.085"="blue",
+  "FG24.086"="blue",
+  "FG24.045"="orange",
+  "FG24.047"="orange",
+  "FG24.048"="orange",
+  "FG24.051"="orange",
+  "FG24.052"="orange",
+  "FG24.054"="orange",
+  "FG24.067"="orange",
+  "FG24.068"="orange",
+  "FG24.069"="orange",
+  "FG24.070"="orange", 
+  "FG24.071"="orange", 
+  "FG24.072"="orange", 
+  "FG24.073"="orange", 
+  "FG24.074"="orange", 
+  "FG24.087"="orange", 
+  "FG24.088"="orange"
+)
+coloring <- c('blue','blue','orange','orange','blue','blue','orange','orange','orange','orange','orange','orange','orange','orange','blue','blue','orange','orange','blue','blue','blue','blue','blue','blue','blue','blue','blue','blue','blue','blue','blue','blue','orange','orange','orange','orange','orange','orange','orange','orange','orange','orange','orange','orange','orange','orange','orange','orange','blue','blue','blue','blue','blue','blue','blue','blue','blue','blue','orange','orange','orange','orange')
+
+coloring2 <- c('deepskyblue','deepskyblue','goldenrod','goldenrod','deepskyblue','deepskyblue','goldenrod','goldenrod','goldenrod','goldenrod','goldenrod','goldenrod','darkorange2','darkorange2','deepskyblue','deepskyblue','darkorange2','darkorange2','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','darkorange2','darkorange2','goldenrod','goldenrod','goldenrod','goldenrod','goldenrod','goldenrod','goldenrod','goldenrod','goldenrod','goldenrod','goldenrod','goldenrod','goldenrod','goldenrod','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','deepskyblue','goldenrod','goldenrod','goldenrod','goldenrod')
+```
+
+
+#Importing spectro datas
+```{r, echo=FALSE}
+specs <- getspec('~/Documents/CollègeFr/Stage/Spectro', ext = "txt", decimal = ',', lim = c("300","700"))
+#min(specs)
+#specs <- procspec(specs, fixneg = "zero")
+specs <- specs %>% select(!FG24.055_b_G)
+
+middle_specs <- specs %>% select(wl | contains("m"))
+plot(middle_specs, col=coloring)
+
+plotting_middle <- pivot_longer(middle_specs, cols = c(2:63), values_to = "Reflectance", names_to = "Ind")
+plotting_middle$Color <- rep(coloring2, length.out=length(plotting_middle$Ind))
+a <- ggplot(plotting_middle, mapping = aes(x = wl, y= Reflectance, group = Ind, colour = Color)) +
+  geom_line() +
+  scale_colour_identity() +
+  ylab("Reflectance (%)") +
+  xlab("Wavelength (nm)") +
+  theme_classic()
+
+black_specs <- specs %>% select(wl | contains("b"))
+plot(black_specs, col=coloring[c(-7,-18)])
+
+plotting_black <- pivot_longer(black_specs, cols = c(2:61), values_to = "Reflectance", names_to = "Ind")
+plotting_black$Color <- rep(coloring2[c(-7, -18)], length.out=length(plotting_black$Ind))
+b <- ggplot(plotting_black, mapping = aes(x = wl, y= Reflectance, group = Ind, colour = Color)) +
+  geom_line() +
+  scale_colour_identity() +
+  ylab("Reflectance (%)") +
+  xlab("Wavelength (nm)") +
+  theme_classic()
+
+white_specs <- specs %>% select(wl | contains("w"))
+plot(white_specs, col = coloring)
+
+plotting_white <- pivot_longer(white_specs, cols = c(2:63), values_to = "Reflectance", names_to = "Ind")
+plotting_white$Color <- rep(coloring2, length.out=length(plotting_white$Ind))
+c <- ggplot(plotting_white, mapping = aes(x = wl, y= Reflectance, group = Ind, colour = Color)) +
+  geom_line() +
+  scale_colour_identity() +
+  ylab("Reflectance (%)") +
+  xlab("Wavelength (nm)") +
+  theme_classic()
+```
+
+#Doing a PCA over spectra
+```{r, echo=FALSE}
+spec.bin <- procspec(specs, opt = c("bin","center")) #with "bin" we have less variables so less PC
+spec.bin <- t(spec.bin)
+spec.bin <- data.frame(spec.bin)
+colnames(spec.bin) <- spec.bin[1, ]
+spec.bin <- spec.bin[-1, ] # remove 'wl' column
+
+spec.bin$ID <- str_split(rownames(spec.bin), "_", simplify=TRUE)[,1]
+spec.bin$measure <- str_split(rownames(spec.bin), "_", simplify=TRUE)[,2]
+spec.bin$wing <- str_split(rownames(spec.bin), "_", simplify=TRUE)[,3]
+spec.bin$repetability <- paste0(spec.bin$ID, "_",spec.bin$measure)
+spec.bin$morph <- morph[spec.bin$ID]
+spec.bin$color <- paste0(spec.bin$morph, "_",spec.bin$measure)
+
+pca1 <- prcomp(spec.bin[,0:20], scale. = TRUE)
+summary(pca1)
+autoplot(pca1, data = spec.bin, colour="color")
+
+coordinates <- pca1$x[, 1:2]
+distances <- dist(coordinates, method="euclidean")
+print(distances)
+hc <- hclust(distances)
+plot(hc, cex=0.5)
+```
+
+
+#Are right and left measures closer ?
+```{r, echo=FALSE}
+distances <- dist(coordinates, method="euclidean")
+distances <- as.matrix(distances)
+
+df_pairs <- data.frame(Dist=double(),Type=character(),Measure=character())
+
+for (i in 2:nrow(distances)){
+  for (j in 1:(i-1)){
+    ID_col <- colnames(distances)[j]
+    ID_row <- rownames(distances)[i]
+    if (substr(ID_col,10,10)==substr(ID_row,10,10)){
+      mes <- substr(ID_col,10,10)
+      if (strtrim(ID_col,8)==strtrim(ID_row,8)){
+        type <- "Intra"
+      }
+      else{
+        type <- "Inter"
+      }
+      temp <- data.frame(Dist=c(distances[i,j]),Type=c(type),Measure=c(mes))
+      df_pairs <- bind_rows(df_pairs, temp)
+      row.names(df_pairs)[nrow(df_pairs)] <- paste(ID_col, ID_row, sep="-") 
+    }
+  }
+}
+df_pairs$Type <- as.factor(df_pairs$Type)
+df_pairs$Measure <- as.factor(df_pairs$Measure)
+
+a <- ggplot(df_pairs, mapping = aes(x=Type, y=Dist)) + geom_boxplot()
+
+df_pairs %>%
+  group_by(Measure) %>%
+  group_by(Type, .add = TRUE) %>%
+  get_summary_stats(Dist, type="mean_sd")
+
+df_pairs %>%
+  group_by(Measure) %>%
+  group_by(Type, .add = TRUE) %>%
+  shapiro_test(Dist)
+
+stat.test <- df_pairs %>% 
+  group_by(Measure) %>%
+  t_test(Dist ~ Type) %>%
+  add_significance()
+stat.test
+```
+
+
+#PCA for middle measure and distance intra v inter
+```{r}
+spec.bin_m <- procspec(middle_specs, opt = c("bin","center")) #with "bin" we have less variables so less PC
+spec.bin_m <- t(spec.bin_m)
+spec.bin_m <- data.frame(spec.bin_m)
+colnames(spec.bin_m) <- spec.bin_m[1, ]
+spec.bin_m <- spec.bin_m[-1, ] # remove 'wl' column
+
+spec.bin_m$ID <- str_split(rownames(spec.bin_m), "_", simplify=TRUE)[,1]
+spec.bin_m$wing <- str_split(rownames(spec.bin_m), "_", simplify=TRUE)[,3]
+spec.bin_m$morph <- morph[spec.bin_m$ID]
+spec.bin_m$color <- paste0(spec.bin_m$morph, "_",spec.bin_m$ID)
+
+pca_m <- prcomp(spec.bin_m[,0:20], scale. = TRUE)
+summary(pca_m)
+autoplot(pca_m, data = spec.bin_m, colour="morph")
+
+coordinates <- pca_m$x[, 1:2]
+distances <- dist(coordinates, method="euclidean")
+distances <- as.matrix(distances)
+
+df_pairs <- data.frame(Dist=double(),Type=character())
+
+for (i in 2:nrow(distances)){
+  for (j in 1:(i-1)){
+    ID_col <- colnames(distances)[j]
+    ID_row <- rownames(distances)[i]
+    if (strtrim(ID_col,8)==strtrim(ID_row,8)){
+      type <- "Intra"
+    }
+    else{
+      type <- "Inter"
+    }
+    temp <- data.frame(Dist=c(distances[i,j]),Type=c(type))
+    df_pairs <- bind_rows(df_pairs, temp)
+    row.names(df_pairs)[nrow(df_pairs)] <- paste(ID_col, ID_row, sep="-") 
+  }
+}
+
+df_pairs$Type <- as.factor(df_pairs$Type)
+
+a <- ggplot(df_pairs, mapping = aes(x=Type, y=Dist)) + geom_boxplot()
+
+stat.test <- df_pairs %>% 
+  t_test(Dist ~ Type) %>%
+  add_significance()
+stat.test
+```
+
+#PCA for black measure and distance intra v inter
+```{r}
+spec.bin_b <- procspec(black_specs, opt = c("bin","center")) #with "bin" we have less variables so less PC
+spec.bin_b <- t(spec.bin_b)
+spec.bin_b <- data.frame(spec.bin_b)
+colnames(spec.bin_b) <- spec.bin_b[1, ]
+spec.bin_b <- spec.bin_b[-1, ] # remove 'wl' column
+
+spec.bin_b$ID <- str_split(rownames(spec.bin_b), "_", simplify=TRUE)[,1]
+spec.bin_b$wing <- str_split(rownames(spec.bin_b), "_", simplify=TRUE)[,3]
+spec.bin_b$morph <- morph[spec.bin_b$ID]
+spec.bin_b$color <- paste0(spec.bin_b$morph, "_",spec.bin_b$ID)
+
+pca_b <- prcomp(spec.bin_b[,0:20], scale. = TRUE)
+summary(pca_b)
+autoplot(pca_b, data = spec.bin_b, colour="color")
+
+coordinates <- pca_b$x[, 1:2]
+distances <- dist(coordinates, method="euclidean")
+distances <- as.matrix(distances)
+
+df_pairs <- data.frame(Dist=double(),Type=character())
+
+for (i in 2:nrow(distances)){
+  for (j in 1:(i-1)){
+    ID_col <- colnames(distances)[j]
+    ID_row <- rownames(distances)[i]
+    if (strtrim(ID_col,8)==strtrim(ID_row,8)){
+      type <- "Intra"
+    }
+    else{
+      type <- "Inter"
+    }
+    temp <- data.frame(Dist=c(distances[i,j]),Type=c(type))
+    df_pairs <- bind_rows(df_pairs, temp)
+    row.names(df_pairs)[nrow(df_pairs)] <- paste(ID_col, ID_row, sep="-") 
+  }
+}
+
+df_pairs$Type <- as.factor(df_pairs$Type)
+
+a <- ggplot(df_pairs, mapping = aes(x=Type, y=Dist)) + geom_boxplot()
+
+stat.test <- df_pairs %>% 
+  t_test(Dist ~ Type) %>%
+  add_significance()
+stat.test
+```
+
+#PCA for white measure and distance intra v inter
+```{r}
+spec.bin_w <- procspec(white_specs, opt = c("bin","center")) #with "bin" we have less variables so less PC
+spec.bin_w <- t(spec.bin_w)
+spec.bin_w <- data.frame(spec.bin_w)
+colnames(spec.bin_w) <- spec.bin_w[1, ]
+spec.bin_w <- spec.bin_w[-1, ] # remove 'wl' column
+
+spec.bin_w$ID <- str_split(rownames(spec.bin_w), "_", simplify=TRUE)[,1]
+spec.bin_w$wing <- str_split(rownames(spec.bin_w), "_", simplify=TRUE)[,3]
+spec.bin_w$morph <- morph[spec.bin_w$ID]
+spec.bin_w$color <- paste0(spec.bin_w$morph, "_",spec.bin_w$ID)
+
+pca_w <- prcomp(spec.bin_w[,0:20], scale. = TRUE)
+summary(pca_w)
+autoplot(pca_w, data = spec.bin_w, colour="morph")
+
+coordinates <- pca_w$x[, 1:2]
+distances <- dist(coordinates, method="euclidean")
+distances <- as.matrix(distances)
+
+df_pairs <- data.frame(Dist=double(),Type=character())
+
+for (i in 2:nrow(distances)){
+  for (j in 1:(i-1)){
+    ID_col <- colnames(distances)[j]
+    ID_row <- rownames(distances)[i]
+    if (strtrim(ID_col,8)==strtrim(ID_row,8)){
+      type <- "Intra"
+    }
+    else{
+      type <- "Inter"
+    }
+    temp <- data.frame(Dist=c(distances[i,j]),Type=c(type))
+    df_pairs <- bind_rows(df_pairs, temp)
+    row.names(df_pairs)[nrow(df_pairs)] <- paste(ID_col, ID_row, sep="-") 
+  }
+}
+
+df_pairs$Type <- as.factor(df_pairs$Type)
+
+ggplot(df_pairs, mapping = aes(x=Type, y=Dist)) + geom_boxplot()
+
+stat.test <- df_pairs %>% 
+  t_test(Dist ~ Type) %>%
+  add_significance()
+stat.test
+```
+
+#Colourimetric variable
+```{r}
+pairs <- strtrim(names(specs), 10)[-1]
+specs_paired <- aggspec(specs, by=pairs, FUN = mean)
+
+spec.bin_paired <- procspec(specs_paired, opt = c("bin","center")) #with "bin" we have less variables so less PC
+spec.bin_paired <- t(spec.bin_paired)
+spec.bin_paired <- data.frame(spec.bin_paired)
+colnames(spec.bin_paired) <- spec.bin_paired[1, ]
+spec.bin_paired <- spec.bin_paired[-1, ] # remove 'wl' column
+
+spec.bin_paired$ID <- str_split(rownames(spec.bin_paired), "_", simplify=TRUE)[,1]
+spec.bin_paired$measure <- str_split(rownames(spec.bin_paired), "_", simplify=TRUE)[,2]
+spec.bin_paired$repetability <- paste0(spec.bin_paired$ID, "_",spec.bin_paired$measure)
+spec.bin_paired$morph <- morph[spec.bin_paired$ID]
+spec.bin_paired$color <- paste0(spec.bin_paired$morph, "_",spec.bin_paired$measure)
+
+pca_paired <- prcomp(spec.bin_paired[,0:20], scale. = TRUE)
+summary(pca_paired)
+
+d <- autoplot(pca_paired, data = spec.bin_paired, colour="measure", size = 3) +
+  scale_color_discrete(name="Measurement location", labels=c("Black spot", "Middle spot", "Colored spot")) +
+  theme_classic()
+
+colnames(spec.bin_paired)[1:20] <- paste0("test", 1:20)
+
+#Manova sur les axes qui cumulent plus de 90% de la variance (axe 1 et 2 à chaque fois)
+middle_paired <- spec.bin_paired %>% filter(measure=="m")
+model <- lm(cbind(test1,test2) ~ morph, middle_paired)
+Manova(model, test.statistic = "Pillai")
+pca_m_paired <- prcomp(middle_paired[,0:20], scale. = TRUE)
+summary(pca_m_paired)
+autoplot(pca_m_paired, data = middle_paired, colour="morph", frame=TRUE, frame.type='norm')
+#asses variation among group
+scores <- as.data.frame(pca_m_paired$x[, 1:2])
+scores$group <- middle_paired$morph
+get_ellipse_area <- function(df) {
+  cov_matrix <- cov(df[, 1:2])
+  eig_vals <- eigen(cov_matrix)$values
+  pi * sqrt(eig_vals[1]) * sqrt(eig_vals[2])
+}
+areas <- scores %>%
+  group_by(group) %>%
+  group_split() %>%
+  setNames(unique(middle_paired$morph)) %>%
+  lapply(get_ellipse_area)
+print(areas[[1]]/(areas[[2]]+areas[[1]]))
+
+black_paired <- spec.bin_paired %>% filter(measure=="b")
+model <- lm(cbind(test1,test2) ~ morph, black_paired)
+Manova(model, test.statistic = "Pillai")
+pca_b_paired <- prcomp(black_paired[,0:20], scale. = TRUE)
+summary(pca_b_paired)
+autoplot(pca_b_paired, data = black_paired, colour="morph", frame=TRUE, frame.type='norm')
+
+white_paired <- spec.bin_paired %>% filter(measure=="w")
+model <- lm(cbind(test1,test2) ~ morph, white_paired)
+Manova(model, test.statistic = "Pillai")
+pca_w_paired <- prcomp(white_paired[,0:20], scale. = TRUE)
+summary(pca_w_paired)
+autoplot(pca_w_paired, data = white_paired, colour="morph", frame=TRUE, frame.type='norm')
+
+#trying a PCA on just blue individuals to see what comes out
+pca_mb_paired <- middle_paired %>% filter(morph=="blue") %>% select(test1:test20) %>% prcomp(scale. = TRUE)
+summary(pca_mb_paired)
+autoplot(pca_mb_paired, data = middle_paired %>% filter(morph=="blue"), label =TRUE, label.label="ID")
+```
+
+#are homo and heterozygotes different ?
+
+```{r}
+zygo_df <- read.delim(file="./Zygosity.txt", sep="\t", header=TRUE)
+
+middle_paired <- full_join(middle_paired, zygo_df, by = join_by(ID==ind))
+white_paired <- full_join(white_paired, zygo_df, by = join_by(ID==ind))
+black_paired <- full_join(black_paired, zygo_df, by = join_by(ID==ind))
+
+e <- autoplot(pca_m_paired, data = middle_paired, colour="Zygosity", size =3) + 
+  scale_colour_manual(values = c("deepskyblue2", "goldenrod", "darkorange2"), name="Genotype", labels=c("B/B", "B/O", "O/O"), limits=c("HOM_BL","HET","HOM_OR")) +
+  theme_classic()
+
+f <- autoplot(pca_w_paired, data = white_paired, colour="Zygosity", size =3) + 
+  scale_colour_manual(values = c("deepskyblue2", "goldenrod", "darkorange2"), name="Genotype", labels=c("B/B", "B/O", "O/O"), limits=c("HOM_BL","HET","HOM_OR")) +
+  theme_classic()
+
+g <- autoplot(pca_b_paired, data = black_paired, colour="Zygosity", size =3) + 
+  scale_colour_manual(values = c("deepskyblue2", "goldenrod", "darkorange2"), name="Genotype", labels=c("B/B", "B/O", "O/O"), limits=c("HOM_BL","HET","HOM_OR")) +
+  theme_classic()
+
+ggarrange(a, e, b, f, c, g, ncol = 2, nrow = 3, align = "hv", labels = c("A", "B", "C", "D", "E", "F"))
+```
+
+#are orange and blue conspicuous and distinguishable ?
+```{r}
+#selecting the dataset
+specs_m_paired <- specs_paired %>% select(wl | contains("m"))
+colnames(specs_m_paired)[-1] <- substr(colnames(specs_m_paired)[-1], 1, 8)
+colnames(specs_m_paired)[-1] <- paste(colnames(specs_m_paired)[-1], substr(morph[colnames(specs_m_paired)[-1]],1,1), sep="_")
+specs_b_paired <- specs_paired %>% select(wl | contains("b"))
+colnames(specs_b_paired)[-1] <- paste0(substr(colnames(specs_b_paired)[-1], 1, 9), "d")
+specs_b_paired <- procspec(specs_b_paired, fixneg = "zero")
+
+vis_dataset <- full_join(specs_m_paired, specs_b_paired, by="wl")
+
+# sensmodel () models spectral sensitivities of retinas based on their peak cone sensitivity
+#takes several optional arguments, but the main one is avector containing the
+#peak sensitivities for the cones being modelled
+
+morpho_model<-sensmodel(c(345,446,495,508,570,602), integrate=FALSE, beta=FALSE)
+#spectral sensitivities taken from Pirih, P., Ilić, M., Meglič, A., & Belušič, G. (2022). 
+#Opponent processing in the retinal mosaic of nymphalid butterflies. Philosophical Transactions of the Royal Society B, 377(1862), 20210275.
+plot(morpho_model, col=c("#FF99CC","#33CCFF","forestgreen","#006633","#FFCC00","red"),
+     lwd=2)
+
+#apply morpho visual model to mean spectra at one angle of illumination
+#perceptual distance between coloured stimuli calculation
+vismod_morpho_mating<-vismodel(vis_dataset,
+                        visual=morpho_model, #morpho_model=morpho vision, avg.uv=average uv-sensitive avian
+                        achromatic="bt.dc", #receptor sensitivity data
+                        illum="forestshade", #standard daylight illumination, try with forestshade also
+                        relative=FALSE,
+                        vonkries=TRUE, #set to true when want to normalize to the background
+                        bkg="green" #"green" = foliage background, "ideal"= illuminance homogeneous
+                        )
+
+regions <- substr(rownames(vismod_morpho_mating), 10, 10)
+
+#bootstrap calculation
+chromatic_distance<-bootcoldist(vismod_morpho_mating,
+                                by=regions,
+                                n=c(1,1,1,1,1,1), #completement arbitraire,morpho model=c(1,1,1,1,1,1)
+                                weber=0.1,
+                                weber.achro=0.1)
+
+plot(chromatic_distance[, 1],
+  ylim = c(0, 30),
+  pch = 21,
+  bg = 1,
+  cex = 2,
+  xaxt = "n",
+  xlab = "Centroid comparison",
+  ylab = "Chromatic contrast (dS)"
+)
+axis(1, at = 1:3, labels = rownames(chromatic_distance))
+segments(1:3, chromatic_distance[, 2], 1:3, chromatic_distance[, 3], lwd = 2) # Add CI's
+abline(h = 1, lty = 3, lwd = 2) # Add a 'threshold' line at dS = 1
+
+plot(chromatic_distance[, 4],
+  ylim = c(0, 50),
+  pch = 21,
+  bg = 1,
+  cex = 2,
+  xaxt = "n",
+  xlab = "Centroid comparison",
+  ylab = "Achromatic contrast (dL)"
+)
+axis(1, at = 1:3, labels = rownames(chromatic_distance))
+segments(1:3, chromatic_distance[, 5], 1:3, chromatic_distance[, 6], lwd = 2) # Add CI's
+abline(h = 1, lty = 3, lwd = 2) # Add a 'threshold' line at dL = 1
+
+#apply avg uv avian visual model to mean spectra at one angle of illumination
+#perceptual distance between coloured stimuli calculation
+vismod_morpho_pred<-vismodel(vis_dataset,
+                        visual="avg.uv", #morpho_model=morpho vision, avg.uv=average uv-sensitive avian
+                        achromatic="bt.dc", #receptor sensitivity data
+                        illum="forestshade", #standard daylight illumination, try with forestshade also
+                        relative=FALSE,
+                        vonkries=TRUE, #set to true when want to normalize to the background
+                        bkg="green" #"green" = foliage background, "ideal"= illuminance homogeneous
+                        )
+
+regions <- substr(rownames(vismod_morpho_pred), 10, 10)
+
+#bootstrap calculation
+chromatic_distance<-bootcoldist(vismod_morpho_pred,
+                                by=regions,
+                                n=c(1,2,2,4), #by default proposed
+                                weber=0.1,
+                                weber.achro=0.1)
+
+plot(chromatic_distance[, 1],
+  ylim = c(0, 20),
+  pch = 21,
+  bg = 1,
+  cex = 2,
+  xaxt = "n",
+  xlab = "Centroid comparison",
+  ylab = "Chromatic contrast (dS)"
+)
+axis(1, at = 1:3, labels = rownames(chromatic_distance))
+segments(1:3, chromatic_distance[, 2], 1:3, chromatic_distance[, 3], lwd = 2) # Add CI's
+abline(h = 1, lty = 3, lwd = 2) # Add a 'threshold' line at dS = 1
+
+plot(chromatic_distance[, 4],
+  ylim = c(0, 50),
+  pch = 21,
+  bg = 1,
+  cex = 2,
+  xaxt = "n",
+  xlab = "Centroid comparison",
+  ylab = "Achromatic contrast (dL)"
+)
+axis(1, at = 1:3, labels = rownames(chromatic_distance))
+segments(1:3, chromatic_distance[, 5], 1:3, chromatic_distance[, 6], lwd = 2) # Add CI's
+abline(h = 1, lty = 3, lwd = 2) # Add a 'threshold' line at dL = 1
+```
+
+
+#mean colors of morphs ?
+```{r}
+hue <- summary(middle_specs, subset = TRUE)
+hue$ind <- strtrim(row.names(hue), 8)
+hue$color <- morph[hue$ind]
+hue <- full_join(hue, zygo_df)
+hue %>% group_by(Zygosity) %>% get_summary_stats(H1, show = c("mean","sd"))
+hue %>% group_by(Zygosity) %>% get_summary_stats(B2, show = c("mean","sd"))
+hue %>% wilcox_test(B2~Zygosity)
+hue %>% group_by(Zygosity) %>% get_summary_stats(S8, show = c("mean","sd"))
+
+hue_paired <- summary(specs_m_paired, subset = TRUE)
+hue_paired$ind <- strtrim(row.names(hue_paired), 8)
+hue_paired$color <- morph[hue_paired$ind]
+hue_paired <- full_join(hue_paired, zygo_df)
+hue_paired %>% group_by(Zygosity) %>% get_summary_stats(H1, show = c("mean","sd"))
+hue_paired %>% group_by(Zygosity) %>% get_summary_stats(B2, show = c("mean","sd"))
+hue_paired %>% wilcox_test(B2~Zygosity)
+hue_paired %>% group_by(Zygosity) %>% get_summary_stats(S8, show = c("mean","sd"))
+
+hue_paired %>% group_by(color) %>% get_summary_stats(H1, show = c("mean","sd"))
+hue_paired %>% group_by(color) %>% get_summary_stats(B2, show = c("mean","sd"))
+hue_paired %>% group_by(color) %>% get_summary_stats(S8, show = c("mean","sd"))
+```
